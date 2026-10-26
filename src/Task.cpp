@@ -26,6 +26,29 @@ namespace ts {
 namespace {
 
 constexpr int64_t kBlocksPerTickBudget = 8192;
+
+/// BossBar 文本在客户端走本地化格式化，字面量 % 必须写成 %%
+std::string escapeBossBarText(std::string_view text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (char c : text) {
+        if (c == '%') {
+            out += "%%";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+/// 缓存的空气方块指针
+Block const* airBlockPtr() {
+    static Block const* ptr = []() -> Block const* {
+        auto ref = Block::tryGetFromRegistry(HashedString{"minecraft:air"});
+        return ref.has_value() ? &*ref : nullptr;
+    }();
+    return ptr;
+}
 constexpr char const* kBedrock = "minecraft:bedrock";
 
 BlockSource* blockSourceFor(int dimId) {
@@ -519,23 +542,54 @@ void TaskManager::updateBossBar(SweepTask& task, Player& player) {
 void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
     int64_t bossId = visual::BossBar::idFor("task-" + std::to_string(task.id));
 
-    int total  = task.plan.layerCount;
-    int cur    = std::min(task.layersDone + 1, total);
-    int remain = std::max(task.countdown, 0);
+    int total = task.plan.layerCount;
+    int cur   = std::min(task.layersDone + 1, total);
 
-    float ratio = task.plan.layerCountdown > 0
-                    ? (float)remain / (float)task.plan.layerCountdown
-                    : 1.0f;
+    // 阶段：分块间隔 > 层倒计时 > 清理中
+    int         remain    = 0;
+    int         span      = 0;
+    char const* phaseName = nullptr;
 
-    visual::BarColor color = visual::BarColor::Green;
-    if (remain <= 3) {
-        color = visual::BarColor::Red;
-    } else if (remain <= 6) {
-        color = visual::BarColor::Yellow;
+    if (task.chunkCooldown > 0) {
+        remain    = task.chunkCooldown;
+        span      = std::max(1, task.plan.chunkInterval);
+        phaseName = "分块间隔";
+    } else if (task.countdown > 0) {
+        remain    = task.countdown;
+        span      = std::max(1, task.plan.layerCountdown);
+        phaseName = "层倒计时";
     }
 
-    std::string title = "§e[领地清扫] 第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层 | 倒计时 §c"
-                      + std::to_string(remain) + "s §7| §a进度 " + std::to_string(task.progressPercent()) + "%";
+    float ratio = span > 0 ? (float)remain / (float)span : 1.0f;
+
+    // 颜色按剩余比例，避免 2 秒的分块间隔直接闪红
+    visual::BarColor color = visual::BarColor::Green;
+    if (span > 0) {
+        if (ratio <= 0.25f) {
+            color = visual::BarColor::Red;
+        } else if (ratio <= 0.5f) {
+            color = visual::BarColor::Yellow;
+        }
+    }
+
+    std::string title = "§e[领地清扫] §f第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层";
+
+    int const chunks = task.chunksPerLayer();
+    if (task.plan.chunked && chunks > 1) {
+        int const chunkCur = std::min(task.chunkIndex + 1, chunks);
+        title += " §7| §b分块 " + std::to_string(chunkCur) + "/" + std::to_string(chunks);
+    }
+
+    if (span > 0) {
+        title += std::string{" §7| "} + phaseName + " §c" + std::to_string(remain) + "s";
+    } else {
+        title += " §7| §a清理中";
+    }
+
+    title += " §7| §a进度 " + std::to_string(task.progressPercent()) + "%";
+
+    // 客户端把单个 % 当格式化符吞掉，必须转义
+    title = escapeBossBarText(title);
 
     if (!task.bossShown) {
         visual::BossBar::show(player, bossId, title, ratio, color);
@@ -588,14 +642,13 @@ void TaskManager::clearUnit(SweepTask& task) {
     int const z1 = std::min(z0 + cd - 1, task.plan.maxZ);
     (void)cz;
 
-    static Block const* airPtr = []() -> Block const* {
-        auto ref = Block::tryGetFromRegistry(HashedString{"minecraft:air"});
-        return ref.has_value() ? &*ref : nullptr;
-    }();
+    Block const* airPtr = airBlockPtr();
     if (!airPtr) {
         return;
     }
     Block const& air = *airPtr;
+
+    task.layerHadWork = true;
 
     BlockChangeContext changeContext{};
 
@@ -635,6 +688,83 @@ void TaskManager::clearUnit(SweepTask& task) {
     }
 }
 
+void TaskManager::advanceEmptyUnits(SweepTask& task) {
+    auto const& cfg = ConfigManager::getInstance().get();
+    if (!cfg.skipEmptyChunks && !cfg.skipEmptyLayers) {
+        return;
+    }
+    // 正在等待倒计时/间隔时不推进，避免把等待中的层又跳过去
+    if (task.countdown > 0 || task.chunkCooldown > 0) {
+        return;
+    }
+
+    BlockSource* source = blockSourceFor(task.plan.dimId);
+    if (!source) {
+        return;
+    }
+
+    int64_t budget = std::max(0, cfg.emptyScanBudget);
+    if (budget <= 0) {
+        return;
+    }
+
+    int const totalChunks = task.chunksPerLayer();
+    int const cw  = task.plan.chunked ? task.plan.chunkWidth : task.plan.width();
+    int const cd  = task.plan.chunked ? task.plan.chunkDepth : task.plan.depth();
+    int const nx  = task.plan.chunked ? (task.plan.width() + cw - 1) / cw : 1;
+    int64_t skippedChunks = 0;
+    int     skippedLayers = 0;
+
+    while (budget > 0) {
+        if (task.chunkIndex >= totalChunks) {
+            if (task.layersDone + 1 >= task.plan.layerCount) {
+                return; // 交给 finished() 收尾
+            }
+
+            bool const previousLayerEmpty = !task.layerHadWork;
+            ++task.layersDone;
+            task.chunkIndex   = 0;
+            task.cursor       = 0;
+            task.layerHadWork = false;
+
+            if (!cfg.skipEmptyLayers || !previousLayerEmpty) {
+                task.countdown = task.plan.layerCountdown;
+                if (skippedChunks > 0 || skippedLayers > 0) {
+                    TS_DBG(
+                        "[task] #{} 跳过 {} 个空分块 / {} 个空层（本层倒计时照常）",
+                        task.id,
+                        skippedChunks,
+                        skippedLayers
+                    );
+                }
+                return;
+            }
+
+            ++skippedLayers;
+            continue; // 整层都是空的：不消耗倒计时，继续看下一层
+        }
+
+        int const ci = task.chunkIndex;
+        int const x0 = task.plan.minX + (ci % nx) * cw;
+        int const z0 = task.plan.minZ + (ci / nx) * cd;
+        int const x1 = std::min(x0 + cw - 1, task.plan.maxX);
+        int const z1 = std::min(z0 + cd - 1, task.plan.maxZ);
+        int const y  = task.plan.layerY(task.layersDone);
+
+        if (!cfg.skipEmptyChunks || !isChunkEmptyAtLayer(*source, y, x0, x1, z0, z1, budget)) {
+            break; // 有活干：停下来交给 clearUnit
+        }
+
+        ++task.chunkIndex;
+        task.cursor = 0;
+        ++skippedChunks;
+    }
+
+    if (skippedChunks > 0 || skippedLayers > 0) {
+        TS_DBG("[task] #{} 跳过 {} 个空分块 / {} 个空层", task.id, skippedChunks, skippedLayers);
+    }
+}
+
 void TaskManager::stepTask(SweepTask& task) {
     if (task.finished()) {
         finishTask(task.id);
@@ -642,6 +772,13 @@ void TaskManager::stepTask(SweepTask& task) {
     }
 
     Player* owner = findOwner(task);
+
+    // 空分块 / 空层快进（内部处理换层与倒计时设置）
+    advanceEmptyUnits(task);
+    if (task.finished()) {
+        finishTask(task.id);
+        return;
+    }
 
     if (task.countdown > 0) {
         --task.countdown;
@@ -669,16 +806,8 @@ void TaskManager::stepTask(SweepTask& task) {
         task.chunksPerLayer()
     );
 
-    int const totalChunks = task.chunksPerLayer();
-    if (task.chunkIndex >= totalChunks) {
-        ++task.layersDone;
-        task.chunkIndex = 0;
-        task.cursor     = 0;
-        if (task.layersDone >= task.plan.layerCount) {
-            finishTask(task.id);
-            return;
-        }
-        task.countdown = task.plan.layerCountdown;
+    if (task.chunkIndex >= task.chunksPerLayer()) {
+        // advanceEmptyUnits 会处理换层；走到这里说明预算已耗尽，等下一 tick
         if (owner) {
             updateBossBar(task, *owner);
         }
@@ -845,6 +974,31 @@ int64_t computeRefund(SweepTask const& task) {
         return 0;
     }
     return task.paidAmount * (int64_t)(totalUnits - doneUnits) / (int64_t)totalUnits;
+}
+
+bool isChunkEmptyAtLayer(
+    BlockSource& source,
+    int          y,
+    int          x0,
+    int          x1,
+    int          z0,
+    int          z1,
+    int64_t&     budget
+) {
+    for (int x = x0; x <= x1; ++x) {
+        for (int z = z0; z <= z1; ++z) {
+            if (budget <= 0) {
+                return false; // 预算耗尽：保守当作非空，留到下一 tick 再判
+            }
+            --budget;
+
+            auto const& block = source.getBlock(BlockPos{x, y, z});
+            if (!block.isAir() && block.getTypeName() != kBedrock) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------

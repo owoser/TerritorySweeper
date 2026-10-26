@@ -61,6 +61,13 @@ struct Config {
 
     /// 是否要求"下蹲"才响应木棍；false 时站立与下蹲都可触发
     bool stickRequiresSneak{false};
+
+    /// 分块清理时是否跳过"整块都无需清理"的分块（不消耗分块间隔）
+    bool skipEmptyChunks{true};
+    /// 整层都无需清理时是否跳过该层（不消耗每层倒计时）
+    bool skipEmptyLayers{true};
+    /// 每 tick 用于空区域扫描的方块读取预算
+    int  emptyScanBudget{8192};
     int  pauseAutoCancelSeconds{300};
 
     // ---- 价格阶梯（按面积从小到大）----

@@ -172,6 +172,24 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
          "false：站立与下蹲都会触发；true：只有下蹲才触发，站立点击完全无响应"}
     );
 
+    field(
+        "skip_empty_chunks",
+        cfg.skipEmptyChunks ? "true" : "false",
+        {"分块清理时是否跳过\"整块都无需清理\"的分块（不消耗分块间隔）"}
+    );
+
+    field(
+        "skip_empty_layers",
+        cfg.skipEmptyLayers ? "true" : "false",
+        {"整层都无需清理时是否跳过该层（不消耗每层倒计时）"}
+    );
+
+    field(
+        "empty_scan_budget",
+        std::to_string(cfg.emptyScanBudget),
+        {"每 tick 用于空区域扫描的方块读取预算，越大跳得越快、但峰值开销越高"}
+    );
+
     {
         std::string block;
         appendComment(
@@ -473,6 +491,9 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "auto_resume_on_return", cfg.autoResumeOnReturn);
     readIfPresent(root, "leave_check_tolerance", cfg.leaveCheckTolerance);
     readIfPresent(root, "stick_requires_sneak", cfg.stickRequiresSneak);
+    readIfPresent(root, "skip_empty_chunks", cfg.skipEmptyChunks);
+    readIfPresent(root, "skip_empty_layers", cfg.skipEmptyLayers);
+    readIfPresent(root, "empty_scan_budget", cfg.emptyScanBudget);
     readIfPresent(root, "pause_auto_cancel_seconds", cfg.pauseAutoCancelSeconds);
 
     if (root.contains("price_levels") && root["price_levels"].is_array() && !root["price_levels"].empty()) {

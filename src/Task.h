@@ -16,6 +16,8 @@
 #include "mc/platform/UUID.h"
 #include "mc/world/level/BlockPos.h"
 
+class BlockSource;
+
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -105,6 +107,7 @@ struct SweepTask {
     bool    ownerInLand{true};
     bool    bossShown{false};
     bool    leavePaused{false};     ///< 是否因"离开领地/离线"而暂停（用于自动续跑）
+    bool    layerHadWork{true};     ///< 当前层是否真的清过方块（空层不消耗倒计时）
     int64_t paidAmount{0};
 
     [[nodiscard]] int  chunksPerLayer() const;
@@ -121,6 +124,17 @@ enum class LeaveState {
 
 /// 领地稳定键：优先用 PLand 的 LandID；为 0 时用 AABB 派生（避免所有领地共用 0）
 [[nodiscard]] int64_t landKeyOf(compat::LandSnapshot const& land);
+
+/// 该分块在指定层是否没有任何需要清理的方块（空气与基岩都算"无需处理"）
+bool isChunkEmptyAtLayer(
+    BlockSource& source,
+    int          y,
+    int          x0,
+    int          x1,
+    int          z0,
+    int          z1,
+    int64_t&     budget
+);
 
 /// 领主当前是否仍在任务所属领地内（以领地 AABB 为准，不看清扫选区）。
 /// 若任务缺少领地 AABB，会尝试反查并回填到 task.plan。
@@ -187,6 +201,7 @@ private:
     TaskManager() = default;
 
     void            stepTask(SweepTask& task);
+    void            advanceEmptyUnits(SweepTask& task);
     void            clearUnit(SweepTask& task);
     void            updateBossBar(SweepTask& task, Player& player);
     void            updateBossBarImpl(SweepTask& task, Player& player);
