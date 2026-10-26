@@ -88,6 +88,8 @@ void SelectionManager::begin(Player& player, PlayerLand const& land) {
     state.landId = land.land.id;
     mStates[keyOf(player)] = state;
 
+    TS_DBG("[selection] begin 玩家={} 领地#{}", player.getRealName(), land.land.id);
+
     if (ConfigManager::getInstance().get().regionFrameEnabled) {
         visual::RegionRenderer::drawBox(
             player,

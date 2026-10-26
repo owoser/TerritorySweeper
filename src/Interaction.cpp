@@ -123,9 +123,20 @@ void handleStickUse(Player& player, BlockPos const& pos) {
         return;
     }
 
+    TS_DBG(
+        "[interact] 木棍点击 {} 领地#{} 角色={} 坐标=({},{},{})",
+        player.getRealName(),
+        land->land.id,
+        land->roleName(),
+        pos.x,
+        pos.y,
+        pos.z
+    );
+
     auto& manager = TaskManager::getInstance();
 
     if (auto* task = manager.taskOfLand(land->land.id); task) {
+        TS_DBG("[interact] 命中任务 #{} → 打开管理面板", task->id);
         form::openManage(player, *task);
         return;
     }
@@ -137,6 +148,7 @@ void handleStickUse(Player& player, BlockPos const& pos) {
     // 选点必须由 /ts new 开启，避免误触直接把玩家带进任务菜单
     auto state = SelectionManager::getInstance().get(player);
     if (!state || !state->active) {
+        TS_DBG("[interact] 无活动选区 → 提示先 /ts new");
         player.sendMessage("§e[领地清扫] 请先使用 §f/ts new§e 创建清扫任务，再用木棍选择点 A 与点 B。");
         return;
     }

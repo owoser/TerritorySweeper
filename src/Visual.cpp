@@ -48,9 +48,10 @@ std::string uuidKey(mce::UUID const& uuid) { return uuid.asString(); }
 /// 维度最低高度（0 = 主世界，1 = 下界，2 = 末地）
 constexpr int worldMinYFor(int dimId) { return (dimId == 1 || dimId == 2) ? 0 : -64; }
 
-/// BossBar 的 id 同时充当 ActorUniqueID 与 ActorRuntimeID，必须为正且避开真实实体 id 段
+/// BossBar 的 id 同时充当 ActorUniqueID 与 ActorRuntimeID。
+/// 取一个远离真实实体 id（服务器内自增的小整数）的常规正值区间，避免客户端出现异常值。
 int64_t makeBossId(std::size_t index) {
-    return (int64_t)(0x4000000000000000ULL | (uint64_t)(index & 0xFFFFULL));
+    return (int64_t)1'000'000'000'000LL + (int64_t)(index & 0xFFFF);
 }
 
 /// 发送一条 BossEvent 包
@@ -62,8 +63,19 @@ void sendBossEvent(
     float               progress01,
     BarColor            color
 ) {
-    BossEventPacket pkt;
-    auto&           payload = static_cast<BossEventPacketPayload&>(pkt);
+    // 必须像 LSE 一样通过 MinecraftPackets 工厂创建：栈上默认构造时
+    // mSerializationMode 等字段未经 BDS 初始化，写出的包可能不合规。
+    auto base = MinecraftPackets::createPacket(MinecraftPacketIds::BossEvent);
+    if (!base) {
+        log::get().warn("createPacket(BossEvent) 返回空，跳过 BossBar 发包");
+        return;
+    }
+    auto* pkt = static_cast<BossEventPacket*>(base.get());
+    if (!pkt) {
+        return;
+    }
+
+    auto& payload = static_cast<BossEventPacketPayload&>(*pkt);
 
     payload.mBossID        = ActorUniqueID{bossId};
     payload.mEventType     = type;
@@ -72,7 +84,15 @@ void sendBossEvent(
     payload.mColor         = static_cast<BossBarColor>(color);
     payload.mOverlay       = BossBarOverlay::Progress;
 
-    player.sendNetworkPacket(pkt);
+    player.sendNetworkPacket(*pkt);
+
+    TS_DBG(
+        "[bossbar] 发包 type={} id=0x{:016X} percent={:.2f} player={}",
+        (int)type,
+        (uint64)bossId,
+        clamp01(progress01),
+        player.getRealName()
+    );
 }
 
 /// 先给客户端造一个"看不见的玩家实体"，BossBar 必须挂在实体上才能渲染。
@@ -99,6 +119,15 @@ void sendFakeBossActor(Player& player, int64_t bossId) {
 
     // 其余字段（速度/旋转/属性/同步数据/连接）保持默认空值，与 LSE 的做法一致
     player.sendNetworkPacket(*pkt);
+
+    TS_DBG(
+        "[bossbar] AddActor id=0x{:016X} runtimeId=0x{:016X} pos=({:.1f},{:.1f},{:.1f})",
+        (uint64)bossId,
+        (uint64)bossId,
+        payload.mPos->x,
+        payload.mPos->y,
+        payload.mPos->z
+    );
 }
 
 /// 与 LSE PlayerClass::setBossBar 完全一致的发送顺序：Remove -> AddActor -> Add

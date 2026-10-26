@@ -657,6 +657,16 @@ void TaskManager::stepTask(SweepTask& task) {
         return;
     }
 
+    TS_DBG(
+        "[task] #{} tick: layer={}/{} countdown={} chunk={}/{}",
+        task.id,
+        task.layersDone + 1,
+        task.plan.layerCount,
+        task.countdown,
+        task.chunkIndex,
+        task.chunksPerLayer()
+    );
+
     int const totalChunks = task.chunksPerLayer();
     if (task.chunkIndex >= totalChunks) {
         ++task.layersDone;

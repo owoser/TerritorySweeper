@@ -17,8 +17,14 @@ class Plugin;
 
 [[nodiscard]] Plugin& getPlugin();
 
+/// config.jsonc 里的 debug 开关；关闭时 TS_DBG 完全零成本
+[[nodiscard]] bool isDebugEnabled();
+
 namespace log {
 [[nodiscard]] ll::io::Logger& get();
 }
 
 } // namespace ts
+
+/// 仅在 debug: true 时输出的详细日志（发包、任务推进、交互等）
+#define TS_DBG(...)                                                                                                        do {                                                                                                                       if (::ts::isDebugEnabled()) {                                                                                              ::ts::log::get().info(__VA_ARGS__);                                                                                }                                                                                                                  } while (0)

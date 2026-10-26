@@ -22,6 +22,9 @@ struct PriceLevel {
 struct Config {
     int configVersion{1};
 
+    /// 调试模式：输出发包、任务推进、交互等详细日志（排查用，平时保持 false）
+    bool debugEnabled{false};
+
     // ---- 经济 ----
     std::string economyType{"LLMoney"};        ///< LLMoney / Scoreboard
     std::string scoreboardObjective{"money"};  ///< 计分板目标名（Scoreboard 模式）

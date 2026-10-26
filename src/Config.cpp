@@ -51,6 +51,10 @@ std::string renderConfig(Config const& cfg) {
     appendComment(out, {"配置文件版本号，请勿手动修改"});
     appendField(out, "config_version", std::to_string(cfg.configVersion));
 
+    appendComment(out, {"调试模式：开启后输出发包 / 任务推进 / 交互等详细日志",
+                        "仅在排查问题时开启，会产生大量控制台输出"});
+    appendField(out, "debug", cfg.debugEnabled ? "true" : "false");
+
     appendComment(out, {"经济系统后端",
                         "可选值：LLMoney（使用 LegacyMoney 插件）、Scoreboard（使用原版计分板）"});
     appendField(out, "economy_type", jsonString(cfg.economyType));
@@ -306,6 +310,7 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     Config cfg = defaultConfig;
 
     readIfPresent(root, "config_version", cfg.configVersion);
+    readIfPresent(root, "debug", cfg.debugEnabled);
     readIfPresent(root, "economy_type", cfg.economyType);
     readIfPresent(root, "scoreboard_objective", cfg.scoreboardObjective);
     readIfPresent(root, "moneyname", cfg.moneyname);

@@ -29,6 +29,8 @@ namespace log {
 ll::io::Logger& get() { return Plugin::getInstance().getSelf().getLogger(); }
 } // namespace log
 
+bool isDebugEnabled() { return ConfigManager::getInstance().get().debugEnabled; }
+
 bool Plugin::load() {
     auto& logger = log::get();
     auto  ver    = getSelf().getManifest().version;
