@@ -58,6 +58,9 @@ struct Config {
     bool autoResumeOnReturn{true};
     /// 判定是否在领地内时允许的水平越界容差（格）
     int  leaveCheckTolerance{2};
+
+    /// 是否要求"下蹲"才响应木棍；false 时站立与下蹲都可触发
+    bool stickRequiresSneak{false};
     int  pauseAutoCancelSeconds{300};
 
     // ---- 价格阶梯（按面积从小到大）----

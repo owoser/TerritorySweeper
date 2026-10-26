@@ -106,19 +106,59 @@ void applyPoint(Player& player, PlayerLand const& land, BlockPos const& pos) {
 
 }
 
+/// 一次木棍点击所对应的上下文；enabled 为 false 时调用方应完全静默
+struct StickContext {
+    std::optional<PlayerLand>     land;
+    SweepTask*                    task{nullptr};
+    PendingBill*                  bill{nullptr};
+    std::optional<SelectionState> selection;
+    bool                          enabled{false};
+};
+
+/// 统一判定"这一次木棍点击是否归我们管"：
+///   1) 必须手持木棍（调用方已判断）
+///   2) 配置要求下蹲时必须在下蹲
+///   3) 必须处于三种状态之一：已 /ts new 选点、领地内有任务、领地内有待支付账单
+StickContext resolveStickContext(Player& player) {
+    StickContext context;
+
+    auto const& cfg = ConfigManager::getInstance().get();
+    if (cfg.stickRequiresSneak && !player.isSneaking()) {
+        return context;
+    }
+
+    context.selection = SelectionManager::getInstance().get(player);
+
+    if (auto land = resolveLandUnderPlayer(player); land) {
+        auto& manager = TaskManager::getInstance();
+        context.task  = manager.taskOfLand(land->key);
+        context.bill  = manager.billOfLand(land->key);
+        context.land  = std::move(land);
+    }
+
+    bool const hasSelection = context.selection && context.selection->active;
+    context.enabled         = hasSelection || context.task != nullptr || context.bill != nullptr;
+    return context;
+}
+
 /// 木棍交互统一入口（左键 / 右键 / 手机点击 共用）
 void handleStickUse(Player& player, BlockPos const& pos) {
+    auto context = resolveStickContext(player);
+    if (!context.enabled) {
+        // 未 /ts new、领地内也没有任务/账单时，完全静默：不提示、不处理
+        return;
+    }
+
     // 同一次点击有时会触发多个事件，150ms 内只处理第一次
     if (isDuplicateClick(player)) {
         return;
     }
 
-    auto land = resolveLandUnderPlayer(player);
-    if (!land) {
+    if (!context.land) {
         player.sendMessage("§c[领地清扫] 你不在任何领地内。");
         return;
     }
-    if (!land->canManage()) {
+    if (!context.land->canManage()) {
         player.sendMessage("§c[领地清扫] 只有领地主人或管理员可以使用该功能。");
         return;
     }
@@ -126,39 +166,33 @@ void handleStickUse(Player& player, BlockPos const& pos) {
     TS_DBG(
         "[interact] 木棍点击 {} 领地#{} 角色={} 坐标=({},{},{})",
         player.getRealName(),
-        land->key,
-        land->roleName(),
+        context.land->key,
+        context.land->roleName(),
         pos.x,
         pos.y,
         pos.z
     );
 
-    auto& manager = TaskManager::getInstance();
-
-    if (auto* task = manager.taskOfLand(land->key); task) {
-        TS_DBG("[interact] 命中任务 #{} → 打开管理面板", task->id);
-        form::openManage(player, *task);
+    if (context.task) {
+        TS_DBG("[interact] 命中任务 #{} → 打开管理面板", context.task->id);
+        form::openManage(player, *context.task);
         return;
     }
-    if (auto* bill = manager.billOfLand(land->key); bill) {
-        form::openBill(player, *bill);
-        return;
-    }
-
-    // 选点必须由 /ts new 开启，避免误触直接把玩家带进任务菜单
-    auto state = SelectionManager::getInstance().get(player);
-    if (!state || !state->active) {
-        TS_DBG("[interact] 无活动选区 → 提示先 /ts new");
-        player.sendMessage("§e[领地清扫] 请先使用 §f/ts new§e 创建清扫任务，再用木棍选择点 A 与点 B。");
+    if (context.bill) {
+        form::openBill(player, *context.bill);
         return;
     }
 
-    if (state->complete()) {
-        form::openDirection(player, *land, *state);
+    if (!context.selection) {
         return;
     }
 
-    applyPoint(player, *land, pos);
+    if (context.selection->complete()) {
+        form::openDirection(player, *context.land, *context.selection);
+        return;
+    }
+
+    applyPoint(player, *context.land, pos);
 }
 
 } // namespace
@@ -180,6 +214,10 @@ void registerListeners() {
         [](ll::event::player::PlayerDestroyBlockEvent& event) {
             Player& player = event.self();
             if (!holdingStick(player)) {
+                return;
+            }
+            // 只有确实归我们管（选点中 / 有任务 / 有账单）才拦截破坏，否则木棍正常挖方块
+            if (!resolveStickContext(player).enabled) {
                 return;
             }
             // 左键点方块：用于设置点 A，同时阻止木棍真的去破坏方块

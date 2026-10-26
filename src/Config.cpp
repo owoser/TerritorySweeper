@@ -117,6 +117,10 @@ std::string renderConfig(Config const& cfg) {
     appendComment(out, {"任务暂停多少秒后自动终止并释放名额，手动暂停同样适用"});
     appendField(out, "pause_auto_cancel_seconds", std::to_string(cfg.pauseAutoCancelSeconds));
 
+    appendComment(out, {"是否要求下蹲才响应木棍点击",
+                        "false：站立与下蹲都会触发；true：只有下蹲才触发，站立点击完全无响应"});
+    appendField(out, "stick_requires_sneak", cfg.stickRequiresSneak ? "true" : "false");
+
     appendComment(out, {"清扫收费规格阶梯",
                         "字段说明：",
                         "  levelname       该档位的显示名称",
@@ -339,6 +343,7 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "player_leave_pause_seconds", cfg.playerLeavePauseSeconds);
     readIfPresent(root, "auto_resume_on_return", cfg.autoResumeOnReturn);
     readIfPresent(root, "leave_check_tolerance", cfg.leaveCheckTolerance);
+    readIfPresent(root, "stick_requires_sneak", cfg.stickRequiresSneak);
     readIfPresent(root, "pause_auto_cancel_seconds", cfg.pauseAutoCancelSeconds);
 
     if (root.contains("price_levels") && root["price_levels"].is_array() && !root["price_levels"].empty()) {
