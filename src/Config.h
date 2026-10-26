@@ -54,6 +54,10 @@ struct Config {
     // ---- 看门狗 ----
     bool pauseOnPlayerLeave{true};
     int  playerLeavePauseSeconds{15};
+    /// 领主回到领地后是否自动继续"因离开而暂停"的任务
+    bool autoResumeOnReturn{true};
+    /// 判定是否在领地内时允许的水平越界容差（格）
+    int  leaveCheckTolerance{2};
     int  pauseAutoCancelSeconds{300};
 
     // ---- 价格阶梯（按面积从小到大）----

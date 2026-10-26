@@ -404,8 +404,9 @@ void TaskManager::pauseTask(uint64_t id, std::string const& reason) {
     if (!task || task->state == TaskState::Paused) {
         return;
     }
-    task->state        = TaskState::Paused;
+    task->state         = TaskState::Paused;
     task->pausedSeconds = 0;
+    task->leavePaused   = false; // 调用方若因"离开领地"触发，会在返回后置 true
 
     if (auto* owner = findOwner(*task); owner) {
         visual::BossBar::hide(*owner, visual::BossBar::idFor("task-" + std::to_string(task->id)));
@@ -421,9 +422,10 @@ bool TaskManager::resumeTask(uint64_t id) {
     if (!task) {
         return false;
     }
-    task->state         = TaskState::Running;
-    task->pausedSeconds = 0;
+    task->state          = TaskState::Running;
+    task->pausedSeconds  = 0;
     task->offLandSeconds = 0;
+    task->leavePaused    = false;
     if (auto* owner = findOwner(*task); owner) {
         updateBossBar(*task, *owner);
         owner->sendMessage("§a[领地清扫] 任务已继续。");
@@ -703,34 +705,65 @@ void TaskManager::tick() {
     for (auto& task : mTasks) {
         Player* owner = findOwner(task);
 
-        // 玩家在线状态与是否在领地内
+        // 领主实体缺失去抖：维度切换/实体列表抖动时不应立刻算离线
         if (!owner) {
-            task.ownerInLand = false;
-            if (cfg.pauseOnPlayerLeave) {
-                ++task.offLandSeconds;
-                if (task.offLandSeconds >= std::max(1, cfg.playerLeavePauseSeconds)) {
-                    pauseTask(task.id, "领主已离线");
-                    continue;
-                }
-            }
+            ++task.missingOwnerSeconds;
         } else {
-            bool inside = static_cast<int>(owner->getDimensionId()) == task.plan.dimId
-                       && owner->getFeetPos().x >= task.plan.minX - 0.5f
-                       && owner->getFeetPos().x <= task.plan.maxX + 1.5f
-                       && owner->getFeetPos().z >= task.plan.minZ - 0.5f
-                       && owner->getFeetPos().z <= task.plan.maxZ + 1.5f
-                       && owner->getFeetPos().y >= task.plan.minY - 4.0f
-                       && owner->getFeetPos().y <= task.plan.maxY + 8.0f;
+            task.missingOwnerSeconds = 0;
+        }
+        bool const offline = !owner && task.missingOwnerSeconds >= 2;
+
+        if (!cfg.pauseOnPlayerLeave) {
+            // 关闭"离开暂停"时不判定、不累计
+            task.offLandSeconds = 0;
+            task.ownerInLand    = true;
+        } else if (offline) {
+            task.ownerInLand = false;
+            ++task.offLandSeconds;
+            TS_DBG("[watchdog] task=#{} owner={} 离线 {}s", task.id, task.ownerName, task.offLandSeconds);
+            if (task.offLandSeconds >= std::max(1, cfg.playerLeavePauseSeconds)) {
+                pauseTask(task.id, "领主已离线");
+                task.leavePaused = true;
+                continue;
+            }
+        } else if (owner) {
+            auto const state  = evaluateLeaveState(task, *owner);
+            bool const inside = (state != LeaveState::Outside);
 
             task.ownerInLand = inside;
+
+            auto const feet = owner->getFeetPos();
+            TS_DBG(
+                "[watchdog] task=#{} owner={} dim={} pos=({:.1f},{:.1f},{:.1f}) land=#{} inside={} off={}s",
+                task.id,
+                task.ownerName,
+                static_cast<int>(owner->getDimensionId()),
+                feet.x,
+                feet.y,
+                feet.z,
+                task.plan.landId,
+                inside,
+                task.offLandSeconds
+            );
+
             if (inside) {
                 task.offLandSeconds = 0;
-            } else if (cfg.pauseOnPlayerLeave) {
+            } else {
                 ++task.offLandSeconds;
                 if (task.offLandSeconds >= std::max(1, cfg.playerLeavePauseSeconds)) {
                     pauseTask(task.id, "领主离开领地超过 " + std::to_string(cfg.playerLeavePauseSeconds) + " 秒");
+                    task.leavePaused = true;
                     continue;
                 }
+            }
+        }
+
+        // 因离开而暂停的任务：领主回来后可自动续跑
+        if (task.state == TaskState::Paused && task.leavePaused && cfg.autoResumeOnReturn && owner) {
+            if (evaluateLeaveState(task, *owner) == LeaveState::Inside) {
+                resumeTask(task.id);
+                log::get().info("领主 {} 回到领地，任务 #{} 自动继续", task.ownerName, task.id);
+                continue;
             }
         }
 
@@ -743,6 +776,7 @@ void TaskManager::tick() {
             continue;
         }
 
+        task.leavePaused = false;
         stepTask(task);
     }
 
@@ -811,6 +845,54 @@ int64_t computeRefund(SweepTask const& task) {
         return 0;
     }
     return task.paidAmount * (int64_t)(totalUnits - doneUnits) / (int64_t)totalUnits;
+}
+
+// ---------------------------------------------------------------------------
+// 领地内判定
+// ---------------------------------------------------------------------------
+
+LeaveState evaluateLeaveState(SweepTask const& task, Player const& owner) {
+    auto& pland = compat::PLandCompat::getInstance();
+    if (!pland.available()) {
+        return LeaveState::Unknown;
+    }
+
+    if (static_cast<int>(owner.getDimensionId()) != task.plan.dimId) {
+        return LeaveState::Outside;
+    }
+
+    // 以领地自身的 AABB 为准（不是清扫选区）
+    auto land = pland.landById(task.plan.landId);
+    if (!land) {
+        return LeaveState::Unknown;
+    }
+
+    auto const& cfg = ConfigManager::getInstance().get();
+    int const   tol = std::max(0, cfg.leaveCheckTolerance);
+
+    Vec3 const feet = owner.getFeetPos();
+
+    bool const inside =
+        feet.x >= (float)(land->aabb.min.x - tol) && feet.x <= (float)(land->aabb.max.x + 1 + tol)
+        && feet.z >= (float)(land->aabb.min.z - tol) && feet.z <= (float)(land->aabb.max.z + 1 + tol)
+        && feet.y >= (float)(land->aabb.min.y - 4) && feet.y <= (float)(land->aabb.max.y + 8);
+
+    if (inside) {
+        return LeaveState::Inside;
+    }
+
+    // AABB 判定为外时用点查询复核：覆盖子领地、边界浮点误差等情况
+    BlockPos const feetBlock{
+        (int)std::floor(feet.x),
+        (int)std::floor(feet.y),
+        (int)std::floor(feet.z)
+    };
+    auto at = pland.landAt(feetBlock, task.plan.dimId);
+    if (at && at->id == task.plan.landId) {
+        return LeaveState::Inside;
+    }
+
+    return LeaveState::Outside;
 }
 
 // ---------------------------------------------------------------------------

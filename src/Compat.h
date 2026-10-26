@@ -121,6 +121,10 @@ public:
     /// 查询坐标所在领地（pos 为方块坐标）
     [[nodiscard]] std::optional<LandSnapshot> landAt(BlockPos const& pos, int dimId) const;
 
+    /// 按领地 ID 查询（用于判定领主是否仍在任务所属领地内）；
+    /// 依赖 LandRegistry::getLand，缺失时返回 nullopt。
+    [[nodiscard]] std::optional<LandSnapshot> landById(int64_t id) const;
+
     /// 查询玩家在某领地的角色
     [[nodiscard]] std::optional<LandRole> roleOf(LandSnapshot const& land, mce::UUID const& uuid) const;
 
@@ -133,6 +137,7 @@ private:
     using GetInstanceFn    = void* (*)();
     using GetRegistryFn    = void* (*)(void const*);
     using GetLandAtFn      = void (*)(void const*, std::shared_ptr<void>*, BlockPos const&, int);
+    using GetLandByIdFn    = void (*)(void const*, std::shared_ptr<void>*, int64_t);
     using IsOperatorFn     = bool (*)(void const*, mce::UUID const&);
     using GetRoleFn        = unsigned char (*)(void const*, mce::UUID const&);
     using GetAABBFn        = LandAABB const* (*)(void const*);
@@ -147,6 +152,7 @@ private:
     GetInstanceFn mGetInstance{nullptr};
     GetRegistryFn mGetRegistry{nullptr};
     GetLandAtFn   mGetLandAt{nullptr};
+    GetLandByIdFn mGetLandById{nullptr};
     IsOperatorFn  mIsOperator{nullptr};
     GetRoleFn     mGetRole{nullptr};
     GetAABBFn     mGetAABB{nullptr};

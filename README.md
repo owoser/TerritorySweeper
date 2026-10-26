@@ -18,7 +18,7 @@
 | 按比例退款 | 终止任务时按未完成工作量比例退还已付费用（手动终止与暂停超时自动终止同样适用），退款写入审计表 |
 | SQLite 持久化 | 任务、账单、退款审计存于本地数据库，增量写入，WAL 保证崩溃安全 |
 | 视觉反馈 | 选点时显示领地金色边框，选完自动关闭；清理期间常驻显示任务区域青色边框 |
-| 看门狗 | 领主离开领地 15 秒自动暂停；暂停 300 秒自动终止；重启后任务统一恢复为暂停 |
+| 看门狗 | 按**领地 AABB**（而非清扫选区）判定领主是否离开，15 秒后自动暂停；回到领地自动续跑；暂停 300 秒自动终止 |
 | API 自检 | 启动时逐符号解析依赖插件导出，缺失只降级对应功能并打印报告，不会导致插件加载失败 |
 
 ---
@@ -121,6 +121,8 @@ xmake
 // chunked_min_area        面积超过该值才分块（默认 1024 = 32x32）
 // chunk_interval_seconds  分块间隔（默认 2）
 // pause_on_player_leave   离开领地是否暂停（默认 true）
+// auto_resume_on_return   回到领地是否自动续跑（默认 true，仅对"因离开暂停"的任务生效）
+// leave_check_tolerance   判定是否在领地内时的水平容差（默认 2 格）
 // player_leave_pause_seconds 离开多久暂停（默认 15）
 // pause_auto_cancel_seconds  暂停多久自动终止（默认 300）
 // price_levels[]          阶梯价：按 X/Z 跨度匹配第一个满足的档位
@@ -197,7 +199,26 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 
 ---
 
-## 9. BossBar 发包顺序（重要）
+## 9. 看门狗判定规则
+
+`pause_on_player_leave` 打开时，每秒对每个运行中任务执行一次判定（`evaluateLeaveState`）：
+
+1. 领主维度与任务不同 → **离开**；
+2. 用 `LandRegistry::getLand(landId)` 取任务所属领地的 **AABB**（不是清扫选区），
+   水平带 `leave_check_tolerance` 容差、垂直带少量上下容差做包含判定；
+3. AABB 判定为外时，再用 `getLandAt(脚下坐标)` 复核，id 相同即视为**在内**（覆盖子领地与边界误差）；
+4. 领地已删除 / PLand 不可用 → **无法判定**，按"在内"处理，绝不误暂停。
+
+领主实体连续 2 秒找不到才视为离线（去抖）。判定为离开后累计到 `player_leave_pause_seconds` 才暂停，
+并标记为"因离开暂停"；领主回到领地且 `auto_resume_on_return` 为真时自动续跑。手动暂停的任务不受影响。
+
+`debug: true` 时每秒输出一行：
+
+```
+[watchdog] task=#1 owner=Allen13in dim=0 pos=(79.0,71.0,214.0) land=#12 inside=true off=0s
+```
+
+## 10. BossBar 发包顺序（重要）
 
 Bedrock 的 BossBar 是**挂在实体上的**，不是"无名进度条"。因此每次刷新必须按
 LSE `PlayerClass::setBossBar`（也就是 YEssential/Fcam 用的那个 API）的顺序三连发：
@@ -234,7 +255,7 @@ LSE `PlayerClass::setBossBar`（也就是 YEssential/Fcam 用的那个 API）的
 **排查开关**：`bossbar_enabled` / `region_frame_enabled`，任一关闭即可隔离显示层；
 `debug: true` 打开后会输出每个 `[bossbar]` 发包与 `[task]` 推进日志。
 
-## 10. 已知取舍
+## 11. 已知取舍
 
 1. **长加载**：未使用 BDS TickingArea（其 _addArea 需要 LevelStorage，且会与玩家自建区域混淆），
    改为在清扫过程中按区块触达保持区块已加载状态，避免玩家离开导致区块卸载。

@@ -92,14 +92,26 @@ struct SweepTask {
     int64_t cursor{0};           ///< 当前分块内部已处理方块数
     int     pausedSeconds{0};
     int     offLandSeconds{0};
+    int     missingOwnerSeconds{0}; ///< 连续找不到领主实体的秒数（去抖用）
     bool    ownerInLand{true};
     bool    bossShown{false};
+    bool    leavePaused{false};     ///< 是否因"离开领地/离线"而暂停（用于自动续跑）
     int64_t paidAmount{0};
 
     [[nodiscard]] int  chunksPerLayer() const;
     [[nodiscard]] int  progressPercent() const;
     [[nodiscard]] bool finished() const { return layersDone >= plan.layerCount; }
 };
+
+/// 领主是否仍在任务所属领地内
+enum class LeaveState {
+    Inside,  ///< 在领地内
+    Outside, ///< 明确在领地外
+    Unknown, ///< 无法判定（领地已删 / PLand 不可用）——按"在领地内"处理，不暂停
+};
+
+/// 领主当前是否仍在任务所属领地内（以领地 AABB 为准，不看清扫选区）
+[[nodiscard]] LeaveState evaluateLeaveState(SweepTask const& task, Player const& owner);
 
 /// 未完成工作量的千分比（0..1000），按"层 × 子分块"粒度统计
 [[nodiscard]] int remainingPermille(SweepTask const& task);

@@ -108,6 +108,12 @@ std::string renderConfig(Config const& cfg) {
     appendComment(out, {"领主离开领地多少秒后触发暂停，仅在上一项开启时生效"});
     appendField(out, "player_leave_pause_seconds", std::to_string(cfg.playerLeavePauseSeconds));
 
+    appendComment(out, {"领主回到领地后是否自动继续任务（只对因离开领地而暂停的任务生效）"});
+    appendField(out, "auto_resume_on_return", cfg.autoResumeOnReturn ? "true" : "false");
+
+    appendComment(out, {"判定是否在领地内时允许的水平越界容差（格），用于消除边界抖动"});
+    appendField(out, "leave_check_tolerance", std::to_string(cfg.leaveCheckTolerance));
+
     appendComment(out, {"任务暂停多少秒后自动终止并释放名额，手动暂停同样适用"});
     appendField(out, "pause_auto_cancel_seconds", std::to_string(cfg.pauseAutoCancelSeconds));
 
@@ -331,6 +337,8 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "chunk_interval_seconds", cfg.chunkIntervalSeconds);
     readIfPresent(root, "pause_on_player_leave", cfg.pauseOnPlayerLeave);
     readIfPresent(root, "player_leave_pause_seconds", cfg.playerLeavePauseSeconds);
+    readIfPresent(root, "auto_resume_on_return", cfg.autoResumeOnReturn);
+    readIfPresent(root, "leave_check_tolerance", cfg.leaveCheckTolerance);
     readIfPresent(root, "pause_auto_cancel_seconds", cfg.pauseAutoCancelSeconds);
 
     if (root.contains("price_levels") && root["price_levels"].is_array() && !root["price_levels"].empty()) {

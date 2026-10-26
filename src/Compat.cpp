@@ -20,6 +20,7 @@ constexpr char const* kPLandGetRegistry   = "?getLandRegistry@PLand@land@@QEBAAE
 constexpr char const* kRegistryGetLandAt  = "?getLandAt@LandRegistry@land@@QEBA?AV?$shared_ptr@VLand@land@@@std@@"
                                             "AEBVBlockPos@@H@Z";
 constexpr char const* kRegistryIsOperator = "?isOperator@LandRegistry@land@@QEBA_NAEBVUUID@mce@@@Z";
+constexpr char const* kRegistryGetLand    = "?getLand@LandRegistry@land@@QEBA?AV?$shared_ptr@VLand@land@@@std@@_J@Z";
 /// 0.25.0 中 getPermType 与 getEffectiveRole 返回值均为 LandRole，二者签名相同
 constexpr char const* kLandGetPermType    = "?getPermType@Land@land@@QEBA?AW4LandRole@2@AEBVUUID@mce@@@Z";
 constexpr char const* kLandGetRole        = "?getEffectiveRole@Land@land@@QEBA?AW4LandRole@2@AEBVUUID@mce@@@Z";
@@ -123,6 +124,7 @@ bool PLandCompat::probe() {
     mGetInstance = nullptr;
     mGetRegistry = nullptr;
     mGetLandAt   = nullptr;
+    mGetLandById = nullptr;
     mIsOperator  = nullptr;
     mGetRole     = nullptr;
     mGetAABB     = nullptr;
@@ -151,6 +153,9 @@ bool PLandCompat::probe() {
                                                    mSymbols.resolve(kRegistryGetLandAt)));
     mIsOperator = reinterpret_cast<IsOperatorFn>(add("LandRegistry::isOperator(UUID)", kRegistryIsOperator,
                                                      mSymbols.resolve(kRegistryIsOperator)));
+    // 可选符号：用于"领主是否仍在领地内"的判定；缺失时自动降级
+    mGetLandById = reinterpret_cast<GetLandByIdFn>(add("LandRegistry::getLand(landId)", kRegistryGetLand,
+                                                       mSymbols.resolve(kRegistryGetLand)));
 
     // 领地对象
     mGetRole = reinterpret_cast<GetRoleFn>(add("Land::getPermType(UUID)", kLandGetPermType,
@@ -218,6 +223,43 @@ std::optional<LandSnapshot> PLandCompat::landAt(BlockPos const& pos, int dimId) 
     }
 
     snapshot.land = std::move(land);
+    return snapshot;
+}
+
+std::optional<LandSnapshot> PLandCompat::landById(int64_t id) const {
+    if (!mAvailable || !mGetLandById || id == 0) {
+        return std::nullopt;
+    }
+
+    void const* pland = mGetInstance();
+    if (!pland) {
+        return std::nullopt;
+    }
+    void const* registry = mGetRegistry(pland);
+    if (!registry) {
+        return std::nullopt;
+    }
+
+    std::shared_ptr<void> land;
+    mGetLandById(registry, &land, id);
+    if (!land) {
+        return std::nullopt;
+    }
+
+    LandSnapshot snapshot;
+    snapshot.land  = land;
+    snapshot.id    = mGetId(land.get());
+    snapshot.dimId = mGetDimId ? mGetDimId(land.get()) : 0;
+    if (mGetAABB) {
+        if (auto* aabb = mGetAABB(land.get()); aabb) {
+            snapshot.aabb = *aabb;
+        }
+    }
+    if (mGetName) {
+        if (auto* name = mGetName(land.get()); name) {
+            snapshot.name = *name;
+        }
+    }
     return snapshot;
 }
 
