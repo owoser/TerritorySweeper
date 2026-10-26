@@ -27,20 +27,6 @@ namespace {
 
 constexpr int64_t kBlocksPerTickBudget = 8192;
 
-/// BossBar 文本在客户端走本地化格式化，字面量 % 必须写成 %%
-std::string escapeBossBarText(std::string_view text) {
-    std::string out;
-    out.reserve(text.size() + 8);
-    for (char c : text) {
-        if (c == '%') {
-            out += "%%";
-        } else {
-            out += c;
-        }
-    }
-    return out;
-}
-
 /// 缓存的空气方块指针
 Block const* airBlockPtr() {
     static Block const* ptr = []() -> Block const* {
@@ -384,7 +370,7 @@ std::string TaskManager::listTasks() const {
     std::string out;
     for (auto const& task : mTasks) {
         out += " - #" + std::to_string(task.id) + " " + task.ownerName + " | " + toString(task.state) + " | 进度 "
-             + std::to_string(task.progressPercent()) + "% (" + std::to_string(task.layersDone) + "/"
+             + percentText(task.progressPercent()) + " (" + std::to_string(task.layersDone) + "/"
              + std::to_string(task.plan.layerCount) + " 层)\n";
     }
     return out;
@@ -545,20 +531,9 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
     int total = task.plan.layerCount;
     int cur   = std::min(task.layersDone + 1, total);
 
-    // 阶段：分块间隔 > 层倒计时 > 清理中
-    int         remain    = 0;
-    int         span      = 0;
-    char const* phaseName = nullptr;
-
-    if (task.chunkCooldown > 0) {
-        remain    = task.chunkCooldown;
-        span      = std::max(1, task.plan.chunkInterval);
-        phaseName = "分块间隔";
-    } else if (task.countdown > 0) {
-        remain    = task.countdown;
-        span      = std::max(1, task.plan.layerCountdown);
-        phaseName = "层倒计时";
-    }
+    PhaseInfo const info  = describePhase(task);
+    int const       remain = info.remainSeconds;
+    int const       span   = info.phase == BarPhase::Clearing ? 0 : info.spanSeconds;
 
     float ratio = span > 0 ? (float)remain / (float)span : 1.0f;
 
@@ -581,15 +556,13 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
     }
 
     if (span > 0) {
-        title += std::string{" §7| "} + phaseName + " §c" + std::to_string(remain) + "s";
+        title += std::string{" §7| "} + info.name + " §c" + std::to_string(remain) + "s";
     } else {
         title += " §7| §a清理中";
     }
 
-    title += " §7| §a进度 " + std::to_string(task.progressPercent()) + "%";
+    title += " §7| §a进度 " + percentText(task.progressPercent());
 
-    // 客户端把单个 % 当格式化符吞掉，必须转义
-    title = escapeBossBarText(title);
 
     if (!task.bossShown) {
         visual::BossBar::show(player, bossId, title, ratio, color);
@@ -974,6 +947,25 @@ int64_t computeRefund(SweepTask const& task) {
         return 0;
     }
     return task.paidAmount * (int64_t)(totalUnits - doneUnits) / (int64_t)totalUnits;
+}
+
+std::string percentText(int value) { return std::to_string(value) + "％"; }
+
+PhaseInfo describePhase(SweepTask const& task) {
+    PhaseInfo info;
+
+    if (task.chunkCooldown > 0) {
+        info.phase         = BarPhase::ChunkInterval;
+        info.remainSeconds = task.chunkCooldown;
+        info.spanSeconds   = std::max(1, task.plan.chunkInterval);
+        info.name          = "分块间隔";
+    } else if (task.countdown > 0) {
+        info.phase         = BarPhase::LayerCountdown;
+        info.remainSeconds = task.countdown;
+        info.spanSeconds   = std::max(1, task.plan.layerCountdown);
+        info.name          = "层倒计时";
+    }
+    return info;
 }
 
 bool isChunkEmptyAtLayer(

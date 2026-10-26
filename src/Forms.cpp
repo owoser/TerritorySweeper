@@ -305,16 +305,28 @@ void openManage(Player& player, SweepTask& task) {
     std::string content =
         "任务 #" + std::to_string(task.id) + "\n"
         "方向：" + toString(task.plan.direction) + "\n"
-        "进度：" + std::to_string(task.progressPercent()) + "%  ("
-        + std::to_string(task.layersDone) + "/" + std::to_string(task.plan.layerCount) + " 层)\n"
-        "状态：" + toString(task.state) + "\n"
-        "范围：X " + std::to_string(task.plan.minX) + "~" + std::to_string(task.plan.maxX) + "  Z "
-        + std::to_string(task.plan.minZ) + "~" + std::to_string(task.plan.maxZ) + "\n"
-        + (task.state == TaskState::Running
-               ? "本层剩余：" + std::to_string(task.countdown) + " 秒"
-               : "已暂停：" + std::to_string(task.pausedSeconds) + " 秒（"
-                     + std::to_string(ConfigManager::getInstance().get().pauseAutoCancelSeconds)
-                     + " 秒后自动终止）");
+        "进度：" + percentText(task.progressPercent()) + "  ("
+        + std::to_string(task.layersDone) + "/" + std::to_string(task.plan.layerCount) + " 层)\n";
+
+    int const chunks = task.chunksPerLayer();
+    if (task.plan.chunked && chunks > 1) {
+        content += "分块：" + std::to_string(std::min(task.chunkIndex + 1, chunks)) + "/" + std::to_string(chunks) + "\n";
+    }
+
+    content += std::string{"状态："} + toString(task.state) + "\n";
+    content += "范围：X " + std::to_string(task.plan.minX) + "~" + std::to_string(task.plan.maxX) + "  Z "
+             + std::to_string(task.plan.minZ) + "~" + std::to_string(task.plan.maxZ) + "\n";
+
+    if (task.state == TaskState::Running) {
+        auto const info = describePhase(task);
+        content += info.phase == BarPhase::Clearing
+                     ? "当前：清理中"
+                     : "当前：" + std::string{info.name} + " " + std::to_string(info.remainSeconds) + " 秒";
+    } else {
+        content += "已暂停：" + std::to_string(task.pausedSeconds) + " 秒（"
+                 + std::to_string(ConfigManager::getInstance().get().pauseAutoCancelSeconds)
+                 + " 秒后自动终止）";
+    }
 
     SimpleForm form("领地清扫管理");
     form.setContent(content);
@@ -354,7 +366,7 @@ void openKillConfirm(Player& player, uint64_t taskId) {
     std::string content =
         "确定要终止该清扫任务吗？\n\n"
         "已支付：" + money(task->paidAmount) + "\n"
-        "当前进度：" + std::to_string(task->progressPercent()) + "%（已完成 "
+        "当前进度：" + percentText(task->progressPercent()) + "（已完成 "
         + std::to_string(task->layersDone) + "/" + std::to_string(task->plan.layerCount) + " 层）\n"
         "预计退款：§e" + money(refund) + "\n"
         "§7退款按未完成工作量比例计算，实时到账。\n"

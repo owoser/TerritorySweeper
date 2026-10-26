@@ -125,6 +125,25 @@ enum class LeaveState {
 /// 领地稳定键：优先用 PLand 的 LandID；为 0 时用 AABB 派生（避免所有领地共用 0）
 [[nodiscard]] int64_t landKeyOf(compat::LandSnapshot const& land);
 
+/// 玩家可见文本里的百分比。客户端会吞掉 ASCII '%'，统一用全角 '％'
+[[nodiscard]] std::string percentText(int value);
+
+/// 任务当前所处的阶段（BossBar 与管理面板共用同一套判定）
+enum class BarPhase {
+    Clearing,       ///< 正在清理
+    LayerCountdown, ///< 层间倒计时
+    ChunkInterval,  ///< 分块间隔
+};
+
+struct PhaseInfo {
+    BarPhase    phase{BarPhase::Clearing};
+    int         remainSeconds{0}; ///< 剩余秒数（Clearing 时为 0）
+    int         spanSeconds{0};   ///< 该阶段总时长（Clearing 时为 0）
+    char const* name{"清理中"};    ///< 阶段中文名
+};
+
+[[nodiscard]] PhaseInfo describePhase(SweepTask const& task);
+
 /// 该分块在指定层是否没有任何需要清理的方块（空气与基岩都算"无需处理"）
 bool isChunkEmptyAtLayer(
     BlockSource& source,

@@ -218,8 +218,8 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 - **进度条**分母随阶段切换（分块间隔用 `chunk_interval_seconds`，层倒计时用 `layer_countdown_seconds`，清理中满条）；
 - **颜色**按剩余比例：>50% 绿、>25% 黄、其余红。
 
-> ⚠️ BossBar 的文本在客户端走本地化格式化，字面量 `%` 必须写成 `%%`，否则会被吞掉。
-> 代码里统一由 `escapeBossBarText()` 处理，新增文本不用手工转义。
+> ⚠️ 客户端会**吞掉 ASCII 百分号 `%`**（BossBar、表单、聊天均是），转义成 `%%` 也无效。
+> 所有玩家可见文本统一走 `percentText()`，输出全角 `％`（U+FF05）；控制台日志仍用 ASCII `%`。
 
 ## 10. 空区域跳过
 
