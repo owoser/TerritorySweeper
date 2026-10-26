@@ -550,6 +550,11 @@ std::vector<SweepTask> loadTasks() {
 
         // 重启后统一恢复为暂停，但保留已消耗的暂停秒数（释放倒计时续走）
         task.state = TaskState::Paused;
+
+        // 兜底：历史数据可能因早期 bug 越界，夹取到合法范围
+        task.layersDone = std::clamp(task.layersDone, 0, std::max(0, task.plan.layerCount));
+        task.countdown  = std::max(0, task.countdown);
+        task.cursor     = std::max<int64_t>(0, task.cursor);
         out.push_back(std::move(task));
     }
     return out;

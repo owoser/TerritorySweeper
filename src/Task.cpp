@@ -627,6 +627,11 @@ void TaskManager::clearUnit(SweepTask& task) {
     }
     Block const& air = *airPtr;
 
+    // 区块未加载时不能推进：否则整块会被"读成空气"而误判为已清理
+    if (!isRegionLoaded(*source, BlockPos{x0, y, z0}, BlockPos{x1, y, z1})) {
+        return;
+    }
+
     task.layerHadWork = true;
 
     BlockChangeContext changeContext{};
@@ -696,15 +701,16 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
 
     while (budget > 0) {
         if (task.chunkIndex >= totalChunks) {
-            if (task.layersDone + 1 >= task.plan.layerCount) {
-                return; // 交给 finished() 收尾
-            }
-
             bool const previousLayerEmpty = !task.layerHadWork;
+
             ++task.layersDone;
             task.chunkIndex   = 0;
             task.cursor       = 0;
             task.layerHadWork = false;
+
+            if (task.layersDone >= task.plan.layerCount) {
+                return; // 最后一层已完成，交给 finished() 收尾
+            }
 
             if (!cfg.skipEmptyLayers || !previousLayerEmpty) {
                 task.countdown = task.plan.layerCountdown;
@@ -741,6 +747,17 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
 
     if (skippedChunks > 0 || skippedLayers > 0) {
         TS_DBG("[task] #{} 跳过 {} 个空分块 / {} 个空层", task.id, skippedChunks, skippedLayers);
+    }
+
+    // 单个 tick 跳过过多层属于异常（通常意味着区块状态异常），留一条告警便于排查
+    if (skippedLayers > 32) {
+        log::get().warn(
+            "任务 #{} 在单次 tick 内跳过 {} 层（层 {} -> {}），请确认选区是否已全部清空。",
+            task.id,
+            skippedLayers,
+            task.layersDone - skippedLayers + 1,
+            task.layersDone
+        );
     }
 }
 
@@ -1053,6 +1070,10 @@ PhaseInfo describePhase(SweepTask const& task) {
     return info;
 }
 
+bool isRegionLoaded(BlockSource& source, BlockPos const& min, BlockPos const& max) {
+    return source.areChunksFullyLoaded(min, max);
+}
+
 bool isChunkEmptyAtLayer(
     BlockSource& source,
     int          y,
@@ -1062,6 +1083,11 @@ bool isChunkEmptyAtLayer(
     int          z1,
     int64_t&     budget
 ) {
+    // 未加载时区块内的方块一律读成空气，绝不能据此判定"无需清理"
+    if (!isRegionLoaded(source, BlockPos{x0, y, z0}, BlockPos{x1, y, z1})) {
+        return false;
+    }
+
     for (int x = x0; x <= x1; ++x) {
         for (int z = z0; z <= z1; ++z) {
             if (budget <= 0) {

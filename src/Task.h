@@ -145,6 +145,9 @@ struct PhaseInfo {
 
 [[nodiscard]] PhaseInfo describePhase(SweepTask const& task);
 
+/// 该方块范围是否已完全加载。未加载时 getBlock 会返回空气，不能据此判断"空"。
+bool isRegionLoaded(BlockSource& source, BlockPos const& min, BlockPos const& max);
+
 /// 该分块在指定层是否没有任何需要清理的方块（空气与基岩都算"无需处理"）
 bool isChunkEmptyAtLayer(
     BlockSource& source,
