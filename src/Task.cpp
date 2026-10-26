@@ -144,30 +144,43 @@ std::optional<LayerRange> computeLayerRange(
         range.autoComputed = false;
 
         if (direction == SweepDirection::Down) {
+            auto const& cfg     = ConfigManager::getInstance().get();
+            bool const  digRock = cfg.clearBedrock;
+            int const   keep    = std::max(0, cfg.preserveBottomLayers);
+            int const   lowest  = std::min(startY, minWorld + keep); // 保留世界底部 keep 层
+
             int target = std::max(startY - manualLayers + 1, minWorld);
+
+            if (digRock) {
+                // 允许挖基岩：只保证不碰最底部 keep 层
+                target = std::max(target, lowest);
+                if (target > startY) {
+                    target = startY;
+                }
+            } else {
+                // 不挖基岩：向上收缩到第一层含基岩的层之上
+                for (int y = startY; y >= target; --y) {
+                    bool bedrock = false;
+                    for (int x = bounds.minX; x <= bounds.maxX && !bedrock; ++x) {
+                        for (int z = bounds.minZ; z <= bounds.maxZ; ++z) {
+                            auto const& block = source.getBlock(BlockPos{x, y, z});
+                            if (block.getTypeName() == kBedrock) {
+                                bedrock = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (bedrock) {
+                        target     = y + 1;
+                        range.note = "检测到基岩层，已自动收缩到基岩之上";
+                        break;
+                    }
+                }
+            }
+
             range.minY  = target;
             range.maxY  = startY;
             range.count = startY - target + 1;
-
-            // 基岩保护：向上收缩到第一层含基岩的层之上
-            for (int y = startY; y >= target; --y) {
-                bool bedrock = false;
-                for (int x = bounds.minX; x <= bounds.maxX && !bedrock; ++x) {
-                    for (int z = bounds.minZ; z <= bounds.maxZ; ++z) {
-                        auto const& block = source.getBlock(BlockPos{x, y, z});
-                        if (block.getTypeName() == kBedrock) {
-                            bedrock = true;
-                            break;
-                        }
-                    }
-                }
-                if (bedrock) {
-                    range.minY  = y + 1;
-                    range.count = startY - range.minY + 1;
-                    range.note  = "检测到基岩层，已自动收缩到基岩之上";
-                    break;
-                }
-            }
         } else {
             int target = std::min(startY + manualLayers - 1, maxWorld);
             range.minY  = startY;
@@ -189,31 +202,43 @@ std::optional<LayerRange> computeLayerRange(
     range.autoComputed = true;
 
     if (direction == SweepDirection::Down) {
-        int bottom = minWorld;
+        auto const& cfg     = ConfigManager::getInstance().get();
+        bool const  digRock = cfg.clearBedrock;
+        int const   keep    = std::max(0, cfg.preserveBottomLayers);
+
+        int  bottom       = minWorld;
         bool foundBedrock = false;
-        for (int y = startY; y >= minWorld; --y) {
-            bool bedrock = false;
-            for (int x = bounds.minX; x <= bounds.maxX && !bedrock; ++x) {
-                for (int z = bounds.minZ; z <= bounds.maxZ; ++z) {
-                    if (source.getBlock(BlockPos{x, y, z}).getTypeName() == kBedrock) {
-                        bedrock = true;
-                        break;
+
+        if (digRock) {
+            // 允许挖基岩：直接清到世界底部保留层之上
+            bottom = std::min(startY, minWorld + keep);
+            range.note = "自动清理到世界底部，保留最底部基岩";
+        } else {
+            for (int y = startY; y >= minWorld; --y) {
+                bool bedrock = false;
+                for (int x = bounds.minX; x <= bounds.maxX && !bedrock; ++x) {
+                    for (int z = bounds.minZ; z <= bounds.maxZ; ++z) {
+                        if (source.getBlock(BlockPos{x, y, z}).getTypeName() == kBedrock) {
+                            bedrock = true;
+                            break;
+                        }
                     }
                 }
+                if (bedrock) {
+                    bottom       = y + 1;
+                    foundBedrock = true;
+                    break;
+                }
             }
-            if (bedrock) {
-                bottom       = y + 1;
-                foundBedrock = true;
-                break;
+            if (!foundBedrock) {
+                bottom = minWorld;
             }
+            range.note = foundBedrock ? "自动扫描到基岩层之上" : "自动扫描到世界底部";
         }
-        if (!foundBedrock) {
-            bottom = minWorld;
-        }
+
         range.minY  = bottom;
         range.maxY  = startY;
         range.count = startY - bottom + 1;
-        range.note  = foundBedrock ? "自动扫描到基岩层之上" : "自动扫描到世界底部";
     } else {
         // 向上：找到第一个"整层全空气"的层
         int airLayer = maxWorld + 1;
