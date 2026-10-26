@@ -59,6 +59,9 @@ struct Config {
     [[nodiscard]] static Config makeDefault();
 };
 
+/// 按配置值渲染出带中文注释的 JSONC 文本（注释只描述字段含义，不包含当前取值）
+[[nodiscard]] std::string renderConfig(Config const& cfg);
+
 class ConfigManager {
 public:
     static ConfigManager& getInstance();

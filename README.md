@@ -95,7 +95,11 @@ xmake
 
 ## 6. 配置
 
-首次启动自动生成 `plugins/TerritorySweeper/config/config.json`（中文注释键，标准 JSON）。
+首次启动自动生成 `plugins/TerritorySweeper/config/config.json`，格式为 **JSONC**（允许 `//` 注释），
+注释只描述字段含义、不包含当前取值，字段之间留 2 行空行便于阅读。
+
+> 旧版本用过 `"// 说明": 值` 这种"伪装注释键"格式；插件首次加载时会自动迁移为新版注释排版，
+> 并把原文件备份为 `config.json.bak-<时间戳>`。迁移只发生一次，之后插件不会再改写你的配置文件。
 
 关键项：
 
