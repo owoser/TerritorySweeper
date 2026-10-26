@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "Global.h"
+#include "Task.h"
 #include "Visual.h"
 
 #include "mc/world/actor/player/Player.h"
@@ -68,6 +69,7 @@ std::optional<PlayerLand> resolveLandUnderPlayer(Player const& player) {
     PlayerLand result;
     result.land       = std::move(*land);
     result.isOperator = pland.isOperator(player.getUuid());
+    result.key        = landKeyOf(result.land);
     if (auto role = pland.roleOf(result.land, player.getUuid()); role) {
         result.role = *role;
     }
@@ -85,10 +87,10 @@ void SelectionManager::begin(Player& player, PlayerLand const& land) {
     SelectionState state;
     state.active = true;
     state.dimId  = land.land.dimId;
-    state.landId = land.land.id;
+    state.landId = land.key;
     mStates[keyOf(player)] = state;
 
-    TS_DBG("[selection] begin 玩家={} 领地#{}", player.getRealName(), land.land.id);
+    TS_DBG("[selection] begin 玩家={} 领地#{}", player.getRealName(), land.key);
 
     if (ConfigManager::getInstance().get().regionFrameEnabled) {
         visual::RegionRenderer::drawBox(

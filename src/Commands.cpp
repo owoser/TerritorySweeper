@@ -62,7 +62,7 @@ void handleNew(Player& player, CommandOutput& output) {
         return;
     }
 
-    auto reject = TaskManager::getInstance().checkCreateAllowed(player, land->land.id);
+    auto reject = TaskManager::getInstance().checkCreateAllowed(player, land->key);
     if (!reject.empty()) {
         output.error(reject);
         player.sendMessage("§c" + reject);
@@ -93,7 +93,7 @@ void setPoint(Player& player, CommandOutput& output, int which, BlockPos pos) {
 
     // 未点 A 就先执行指令时，自动开启选点
     if (!SelectionManager::getInstance().get(player)) {
-        auto reject = TaskManager::getInstance().checkCreateAllowed(player, land->land.id);
+        auto reject = TaskManager::getInstance().checkCreateAllowed(player, land->key);
         if (!reject.empty()) {
             output.error(reject);
             player.sendMessage("§c" + reject);
@@ -159,7 +159,7 @@ void handleStart(Player& player, CommandOutput& output) {
     if (!land) {
         return;
     }
-    auto* task = TaskManager::getInstance().taskOfLand(land->land.id);
+    auto* task = TaskManager::getInstance().taskOfLand(land->key);
     if (!task) {
         output.error("本领地没有可继续的清扫任务。");
         return;
@@ -177,7 +177,7 @@ void handleStop(Player& player, CommandOutput& output) {
     if (!land) {
         return;
     }
-    auto* task = TaskManager::getInstance().taskOfLand(land->land.id);
+    auto* task = TaskManager::getInstance().taskOfLand(land->key);
     if (!task) {
         output.error("本领地没有正在运行的清扫任务。");
         return;
@@ -191,7 +191,7 @@ void handleKill(Player& player, CommandOutput& output) {
     if (!land) {
         return;
     }
-    auto* task = TaskManager::getInstance().taskOfLand(land->land.id);
+    auto* task = TaskManager::getInstance().taskOfLand(land->key);
     if (!task) {
         output.error("本领地没有可终止的清扫任务。");
         return;

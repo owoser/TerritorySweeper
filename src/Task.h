@@ -65,9 +65,18 @@ struct SweepPlan {
     int  chunkInterval{2};
     int  layerCountdown{10};
 
-    // 领地绑定
+    // 领地绑定：landId 实际存的是"领地稳定键"（优先 PLand LandID，为 0 时由 AABB 派生）
     int64_t     landId{0};
     std::string landName;
+    // 领地 AABB（判定"领主是否在领地内"的依据；默认 0 表示未知）
+    int         landMinX{0};
+    int         landMaxX{0};
+    int         landMinY{0};
+    int         landMaxY{0};
+    int         landMinZ{0};
+    int         landMaxZ{0};
+
+    [[nodiscard]] bool hasLandBox() const { return landMaxX > landMinX && landMaxZ > landMinZ; }
 
     [[nodiscard]] int  width() const { return maxX - minX + 1; }
     [[nodiscard]] int  depth() const { return maxZ - minZ + 1; }
@@ -110,8 +119,12 @@ enum class LeaveState {
     Unknown, ///< 无法判定（领地已删 / PLand 不可用）——按"在领地内"处理，不暂停
 };
 
-/// 领主当前是否仍在任务所属领地内（以领地 AABB 为准，不看清扫选区）
-[[nodiscard]] LeaveState evaluateLeaveState(SweepTask const& task, Player const& owner);
+/// 领地稳定键：优先用 PLand 的 LandID；为 0 时用 AABB 派生（避免所有领地共用 0）
+[[nodiscard]] int64_t landKeyOf(compat::LandSnapshot const& land);
+
+/// 领主当前是否仍在任务所属领地内（以领地 AABB 为准，不看清扫选区）。
+/// 若任务缺少领地 AABB，会尝试反查并回填到 task.plan。
+[[nodiscard]] LeaveState evaluateLeaveState(SweepTask& task, Player const& owner);
 
 /// 未完成工作量的千分比（0..1000），按"层 × 子分块"粒度统计
 [[nodiscard]] int remainingPermille(SweepTask const& task);

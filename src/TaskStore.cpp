@@ -51,6 +51,12 @@ constexpr std::initializer_list<char const*> kTaskColumns = {
     "layer_countdown",
     "land_id",
     "land_name",
+    "land_min_x",
+    "land_max_x",
+    "land_min_y",
+    "land_max_y",
+    "land_min_z",
+    "land_max_z",
     // ---
     "updated_at",
 };
@@ -83,11 +89,17 @@ constexpr std::initializer_list<char const*> kBillColumns = {
     "layer_countdown",
     // 注意：bills 的 land_id 就是主键，已在上方声明，这里不能再重复一份
     "land_name",
+    "land_min_x",
+    "land_max_x",
+    "land_min_y",
+    "land_max_y",
+    "land_min_z",
+    "land_max_z",
 };
 
 constexpr int kTaskPlanBase    = 12; ///< 0-based，tasks 中 plan 首列（含 land_id）
 constexpr int kBillPlanBase    = 5;  ///< 0-based，bills 中 plan 首列（不含 land_id）
-constexpr int kPlanColumnCount = 21; ///< tasks 的 plan 列数（含 land_id）
+constexpr int kPlanColumnCount = 27; ///< tasks 的 plan 列数（含 land_id 与 6 个领地 AABB 列）
 
 std::string joinColumns(std::initializer_list<char const*> cols) {
     std::string out;
@@ -131,66 +143,96 @@ std::string buildUpsertSql(
          + ") DO UPDATE SET " + sets + ";";
 }
 
-/// base 为 1-based 绑定下标；withLandId 为 false 时跳过 land_id（bills 主键已单独绑定）
-void bindPlan(Statement& st, int base, SweepPlan const& p, bool withLandId) {
-    st.bind(base + 0, (int64_t)p.dimId);
-    st.bind(base + 1, (int64_t)p.minX);
-    st.bind(base + 2, (int64_t)p.maxX);
-    st.bind(base + 3, (int64_t)p.minZ);
-    st.bind(base + 4, (int64_t)p.maxZ);
-    st.bind(base + 5, (int64_t)p.startY);
-    st.bind(base + 6, (int64_t)p.minY);
-    st.bind(base + 7, (int64_t)p.maxY);
-    st.bind(base + 8, (int64_t)p.direction);
-    st.bind(base + 9, (int64_t)p.layerCount);
-    st.bind(base + 10, (int64_t)(p.layerCountAuto ? 1 : 0));
-    st.bind(base + 11, p.levelname);
-    st.bind(base + 12, p.unitPrice);
-    st.bind(base + 13, p.totalPrice);
-    st.bind(base + 14, (int64_t)(p.chunked ? 1 : 0));
-    st.bind(base + 15, (int64_t)p.chunkWidth);
-    st.bind(base + 16, (int64_t)p.chunkDepth);
-    st.bind(base + 17, (int64_t)p.chunkInterval);
-    st.bind(base + 18, (int64_t)p.layerCountdown);
+/// base 为 1-based 绑定起始下标；withLandId 为 false 时跳过 land_id（bills 主键已单独绑定）
+void bindPlan(Statement& st, int base, SweepPlan const& plan, bool withLandId) {
+    int i = base;
+    st.bind(i++, (int64_t)plan.dimId);
+    st.bind(i++, (int64_t)plan.minX);
+    st.bind(i++, (int64_t)plan.maxX);
+    st.bind(i++, (int64_t)plan.minZ);
+    st.bind(i++, (int64_t)plan.maxZ);
+    st.bind(i++, (int64_t)plan.startY);
+    st.bind(i++, (int64_t)plan.minY);
+    st.bind(i++, (int64_t)plan.maxY);
+    st.bind(i++, (int64_t)plan.direction);
+    st.bind(i++, (int64_t)plan.layerCount);
+    st.bind(i++, (int64_t)(plan.layerCountAuto ? 1 : 0));
+    st.bind(i++, plan.levelname);
+    st.bind(i++, plan.unitPrice);
+    st.bind(i++, plan.totalPrice);
+    st.bind(i++, (int64_t)(plan.chunked ? 1 : 0));
+    st.bind(i++, (int64_t)plan.chunkWidth);
+    st.bind(i++, (int64_t)plan.chunkDepth);
+    st.bind(i++, (int64_t)plan.chunkInterval);
+    st.bind(i++, (int64_t)plan.layerCountdown);
     if (withLandId) {
-        st.bind(base + 19, p.landId);
-        st.bind(base + 20, p.landName);
-    } else {
-        st.bind(base + 19, p.landName);
+        st.bind(i++, plan.landId);
     }
+    st.bind(i++, plan.landName);
+    st.bind(i++, (int64_t)plan.landMinX);
+    st.bind(i++, (int64_t)plan.landMaxX);
+    st.bind(i++, (int64_t)plan.landMinY);
+    st.bind(i++, (int64_t)plan.landMaxY);
+    st.bind(i++, (int64_t)plan.landMinZ);
+    st.bind(i++, (int64_t)plan.landMaxZ);
 }
 
 SweepPlan readPlan(Statement const& st, int base, bool withLandId) {
-    SweepPlan p;
-    p.dimId          = (int)st.columnInt(base + 0);
-    p.minX           = (int)st.columnInt(base + 1);
-    p.maxX           = (int)st.columnInt(base + 2);
-    p.minZ           = (int)st.columnInt(base + 3);
-    p.maxZ           = (int)st.columnInt(base + 4);
-    p.startY         = (int)st.columnInt(base + 5);
-    p.minY           = (int)st.columnInt(base + 6);
-    p.maxY           = (int)st.columnInt(base + 7);
-    p.direction      = (SweepDirection)st.columnInt(base + 8);
-    p.layerCount     = (int)st.columnInt(base + 9);
-    p.layerCountAuto = st.columnBool(base + 10);
-    p.levelname      = st.columnText(base + 11);
-    p.unitPrice      = st.columnInt(base + 12);
-    p.totalPrice     = st.columnInt(base + 13);
-    p.chunked        = st.columnBool(base + 14);
-    p.chunkWidth     = (int)st.columnInt(base + 15);
-    p.chunkDepth     = (int)st.columnInt(base + 16);
-    p.chunkInterval  = (int)st.columnInt(base + 17);
-    p.layerCountdown = (int)st.columnInt(base + 18);
+    SweepPlan plan;
+    int       i = base;
+    plan.dimId          = (int)st.columnInt(i++);
+    plan.minX           = (int)st.columnInt(i++);
+    plan.maxX           = (int)st.columnInt(i++);
+    plan.minZ           = (int)st.columnInt(i++);
+    plan.maxZ           = (int)st.columnInt(i++);
+    plan.startY         = (int)st.columnInt(i++);
+    plan.minY           = (int)st.columnInt(i++);
+    plan.maxY           = (int)st.columnInt(i++);
+    plan.direction      = (SweepDirection)st.columnInt(i++);
+    plan.layerCount     = (int)st.columnInt(i++);
+    plan.layerCountAuto = st.columnBool(i++);
+    plan.levelname      = st.columnText(i++);
+    plan.unitPrice      = st.columnInt(i++);
+    plan.totalPrice     = st.columnInt(i++);
+    plan.chunked        = st.columnBool(i++);
+    plan.chunkWidth     = (int)st.columnInt(i++);
+    plan.chunkDepth     = (int)st.columnInt(i++);
+    plan.chunkInterval  = (int)st.columnInt(i++);
+    plan.layerCountdown = (int)st.columnInt(i++);
     if (withLandId) {
-        p.landId   = st.columnInt(base + 19);
-        p.landName = st.columnText(base + 20);
-    } else {
-        p.landName = st.columnText(base + 19);
+        plan.landId = st.columnInt(i++);
     }
-    return p;
+    plan.landName = st.columnText(i++);
+    plan.landMinX = (int)st.columnInt(i++);
+    plan.landMaxX = (int)st.columnInt(i++);
+    plan.landMinY = (int)st.columnInt(i++);
+    plan.landMaxY = (int)st.columnInt(i++);
+    plan.landMinZ = (int)st.columnInt(i++);
+    plan.landMaxZ = (int)st.columnInt(i++);
+    return plan;
 }
 
 int64_t nowSeconds() { return (int64_t)std::time(nullptr); }
+
+/// 幂等补列：表里没有该列才 ALTER TABLE 添加
+void ensureColumn(sqlite3* db, std::string_view table, std::string_view column, std::string_view decl) {
+    std::string pragma = "PRAGMA table_info(" + std::string{table} + ");";
+    {
+        Statement info{db, pragma, "schema:table_info"};
+        if (!info.valid()) {
+            return;
+        }
+        while (info.next()) {
+            if (info.columnText(1) == column) {
+                return; // 已存在
+            }
+        }
+    }
+
+    std::string sql = "ALTER TABLE " + std::string{table} + " ADD COLUMN " + std::string{column} + " "
+                    + std::string{decl} + ";";
+    Database::getInstance().exec(sql, "schema:alter");
+}
 
 } // namespace
 
@@ -244,6 +286,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     layer_countdown INTEGER NOT NULL,
     land_id         INTEGER NOT NULL,
     land_name       TEXT    NOT NULL,
+    land_min_x      INTEGER NOT NULL DEFAULT 0,
+    land_max_x      INTEGER NOT NULL DEFAULT 0,
+    land_min_y      INTEGER NOT NULL DEFAULT 0,
+    land_max_y      INTEGER NOT NULL DEFAULT 0,
+    land_min_z      INTEGER NOT NULL DEFAULT 0,
+    land_max_z      INTEGER NOT NULL DEFAULT 0,
     updated_at      INTEGER NOT NULL
 );
 
@@ -275,7 +323,13 @@ CREATE TABLE IF NOT EXISTS bills (
     chunk_depth     INTEGER NOT NULL,
     chunk_interval  INTEGER NOT NULL,
     layer_countdown INTEGER NOT NULL,
-    land_name       TEXT    NOT NULL
+    land_name       TEXT    NOT NULL,
+    land_min_x      INTEGER NOT NULL DEFAULT 0,
+    land_max_x      INTEGER NOT NULL DEFAULT 0,
+    land_min_y      INTEGER NOT NULL DEFAULT 0,
+    land_max_y      INTEGER NOT NULL DEFAULT 0,
+    land_min_z      INTEGER NOT NULL DEFAULT 0,
+    land_max_z      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS refunds (
@@ -301,14 +355,33 @@ CREATE TABLE IF NOT EXISTS refunds (
             version = st.columnInt(0);
         }
     }
+    constexpr int64_t kCurrentVersion = 2;
+
     if (version == 0) {
         database.exec("PRAGMA user_version = 1;", "schema:set-version");
         version = 1;
     }
-    if (version > 1) {
+
+    // v1 -> v2：任务/账单补充领地 AABB 六列（幂等，已存在则跳过）
+    if (version < 2) {
+        for (auto const* table : {"tasks", "bills"}) {
+            ensureColumn(database.raw(), table, "land_min_x", "INTEGER NOT NULL DEFAULT 0");
+            ensureColumn(database.raw(), table, "land_max_x", "INTEGER NOT NULL DEFAULT 0");
+            ensureColumn(database.raw(), table, "land_min_y", "INTEGER NOT NULL DEFAULT 0");
+            ensureColumn(database.raw(), table, "land_max_y", "INTEGER NOT NULL DEFAULT 0");
+            ensureColumn(database.raw(), table, "land_min_z", "INTEGER NOT NULL DEFAULT 0");
+            ensureColumn(database.raw(), table, "land_max_z", "INTEGER NOT NULL DEFAULT 0");
+        }
+        database.exec("PRAGMA user_version = 2;", "schema:set-version");
+        log::get().info("数据库已从 schema v{} 迁移到 v2（新增领地 AABB 列）。", version);
+        version = 2;
+    }
+
+    if (version > kCurrentVersion) {
         log::get().error(
-            "数据库 schema 版本 {} 高于插件支持的 1，可能来自更新版本，读写行为可能异常。",
-            version
+            "数据库 schema 版本 {} 高于插件支持的 {}，可能来自更新版本，读写行为可能异常。",
+            version,
+            kCurrentVersion
         );
     } else {
         log::get().info("数据库 schema v{} 就绪。", version);

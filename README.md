@@ -204,6 +204,7 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 `pause_on_player_leave` 打开时，每秒对每个运行中任务执行一次判定（`evaluateLeaveState`）：
 
 1. 领主维度与任务不同 → **离开**；
+2. 优先用任务里**固化的领地 AABB**（创建任务时写入，schema v2 持久化）做包含判定；
 2. 用 `LandRegistry::getLand(landId)` 取任务所属领地的 **AABB**（不是清扫选区），
    水平带 `leave_check_tolerance` 容差、垂直带少量上下容差做包含判定；
 3. AABB 判定为外时，再用 `getLandAt(脚下坐标)` 复核，id 相同即视为**在内**（覆盖子领地与边界误差）；

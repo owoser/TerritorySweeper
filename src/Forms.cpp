@@ -57,8 +57,16 @@ SweepPlan buildPlanBase(Player& player, PlayerLand const& land, SelectionState c
     plan.direction = dir;
     plan.startY    = (int)std::floor(player.getFeetPos().y);
 
-    plan.landId   = land.land.id;
+    plan.landId   = land.key;
     plan.landName = land.land.name;
+
+    // 固化领地 AABB：看门狗的"是否离开领地"判定只依赖它，不再依赖 LandID
+    plan.landMinX = land.land.aabb.min.x;
+    plan.landMaxX = land.land.aabb.max.x;
+    plan.landMinY = land.land.aabb.min.y;
+    plan.landMaxY = land.land.aabb.max.y;
+    plan.landMinZ = land.land.aabb.min.z;
+    plan.landMaxZ = land.land.aabb.max.z;
 
     auto const& level = cfg.matchPriceLevel(plan.width(), plan.depth());
     plan.levelname    = level.levelname;
@@ -82,7 +90,7 @@ SweepPlan buildPlanBase(Player& player, PlayerLand const& land, SelectionState c
 
 void openDirection(Player& player, PlayerLand const& land, SelectionState const& selection) {
     auto& logger = log::get();
-    logger.debug("为 {} 打开方向选择表单（领地#{}）", player.getRealName(), land.land.id);
+    logger.debug("为 {} 打开方向选择表单（领地#{}）", player.getRealName(), land.key);
 
     std::string content =
         "清理始发地：玩家脚下坐标\n"
@@ -441,18 +449,18 @@ void openTaskList(Player& player) {
 void openSmartMenu(Player& player, PlayerLand const& land) {
     auto& manager = TaskManager::getInstance();
 
-    if (auto* task = manager.taskOfLand(land.land.id); task) {
+    if (auto* task = manager.taskOfLand(land.key); task) {
         openManage(player, *task);
         return;
     }
 
-    if (auto const* bill = manager.billOfLand(land.land.id); bill) {
+    if (auto const* bill = manager.billOfLand(land.key); bill) {
         openBill(player, *bill);
         return;
     }
 
     auto selection = SelectionManager::getInstance().get(player);
-    if (selection && selection->complete() && selection->landId == land.land.id) {
+    if (selection && selection->complete() && selection->landId == land.key) {
         openDirection(player, land, *selection);
         return;
     }

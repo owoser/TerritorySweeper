@@ -851,48 +851,117 @@ int64_t computeRefund(SweepTask const& task) {
 // 领地内判定
 // ---------------------------------------------------------------------------
 
-LeaveState evaluateLeaveState(SweepTask const& task, Player const& owner) {
+int64_t landKeyOf(compat::LandSnapshot const& land) {
+    if (land.id != 0) {
+        return land.id;
+    }
+
+    // LandID 不可用时退化为 AABB 派生键（FNV-1a），保证不同领地不会共用同一个 0
+    uint64_t hash = 1469598103934665603ull;
+    auto     mix  = [&hash](int64_t value) {
+        hash ^= static_cast<uint64_t>(value);
+        hash *= 1099511628211ull;
+    };
+    mix(land.aabb.min.x);
+    mix(land.aabb.min.y);
+    mix(land.aabb.min.z);
+    mix(land.aabb.max.x);
+    mix(land.aabb.max.y);
+    mix(land.aabb.max.z);
+
+    int64_t key = static_cast<int64_t>(hash & 0x7FFFFFFFFFFFFFFFull);
+    return key == 0 ? 1 : key;
+}
+
+LeaveState evaluateLeaveState(SweepTask& task, Player const& owner) {
+    // 维度不同一定算离开
+    if (static_cast<int>(owner.getDimensionId()) != task.plan.dimId) {
+        return LeaveState::Outside;
+    }
+
+    auto const& cfg  = ConfigManager::getInstance().get();
+    int const   tol  = std::max(0, cfg.leaveCheckTolerance);
+    Vec3 const  feet = owner.getFeetPos();
+
+    auto insideBox = [&](int minX, int maxX, int minY, int maxY, int minZ, int maxZ) {
+        return feet.x >= (float)(minX - tol) && feet.x <= (float)(maxX + 1 + tol) && feet.z >= (float)(minZ - tol)
+            && feet.z <= (float)(maxZ + 1 + tol) && feet.y >= (float)(minY - 4) && feet.y <= (float)(maxY + 8);
+    };
+
+    // 1) 任务已存领地 AABB：直接判定，不再依赖 LandID
+    if (task.plan.hasLandBox()) {
+        bool const inside = insideBox(
+            task.plan.landMinX,
+            task.plan.landMaxX,
+            task.plan.landMinY,
+            task.plan.landMaxY,
+            task.plan.landMinZ,
+            task.plan.landMaxZ
+        );
+        TS_DBG("[watchdog] 任务 #{} 判定 src=aabb inside={}", task.id, inside);
+        return inside ? LeaveState::Inside : LeaveState::Outside;
+    }
+
     auto& pland = compat::PLandCompat::getInstance();
     if (!pland.available()) {
         return LeaveState::Unknown;
     }
 
-    if (static_cast<int>(owner.getDimensionId()) != task.plan.dimId) {
-        return LeaveState::Outside;
+    // 2) 按领地键反查
+    std::optional<compat::LandSnapshot> snapshot = pland.landById(task.plan.landId);
+
+    // 3) 仍拿不到：用选区中心反查一次
+    if (!snapshot) {
+        BlockPos const center{
+            (task.plan.minX + task.plan.maxX) / 2,
+            (task.plan.minY + task.plan.maxY) / 2,
+            (task.plan.minZ + task.plan.maxZ) / 2
+        };
+        snapshot = pland.landAt(center, task.plan.dimId);
+        if (snapshot) {
+            log::get().info("任务 #{} 的领地范围由选区中心反查补全（landId={} 查不到）", task.id, task.plan.landId);
+        }
     }
 
-    // 以领地自身的 AABB 为准（不是清扫选区）
-    auto land = pland.landById(task.plan.landId);
-    if (!land) {
+    if (!snapshot) {
         return LeaveState::Unknown;
     }
 
-    auto const& cfg = ConfigManager::getInstance().get();
-    int const   tol = std::max(0, cfg.leaveCheckTolerance);
-
-    Vec3 const feet = owner.getFeetPos();
-
-    bool const inside =
-        feet.x >= (float)(land->aabb.min.x - tol) && feet.x <= (float)(land->aabb.max.x + 1 + tol)
-        && feet.z >= (float)(land->aabb.min.z - tol) && feet.z <= (float)(land->aabb.max.z + 1 + tol)
-        && feet.y >= (float)(land->aabb.min.y - 4) && feet.y <= (float)(land->aabb.max.y + 8);
-
-    if (inside) {
-        return LeaveState::Inside;
+    // 回填，后续 tick 直接用 AABB，不再重复查询
+    task.plan.landMinX = snapshot->aabb.min.x;
+    task.plan.landMaxX = snapshot->aabb.max.x;
+    task.plan.landMinY = snapshot->aabb.min.y;
+    task.plan.landMaxY = snapshot->aabb.max.y;
+    task.plan.landMinZ = snapshot->aabb.min.z;
+    task.plan.landMaxZ = snapshot->aabb.max.z;
+    if (task.plan.landName.empty()) {
+        task.plan.landName = snapshot->name;
+    }
+    // 让领地键也收敛到当前规范值（老数据里可能存的是 0）
+    if (task.plan.landId == 0) {
+        task.plan.landId = landKeyOf(*snapshot);
     }
 
-    // AABB 判定为外时用点查询复核：覆盖子领地、边界浮点误差等情况
-    BlockPos const feetBlock{
-        (int)std::floor(feet.x),
-        (int)std::floor(feet.y),
-        (int)std::floor(feet.z)
-    };
-    auto at = pland.landAt(feetBlock, task.plan.dimId);
-    if (at && at->id == task.plan.landId) {
-        return LeaveState::Inside;
-    }
-
-    return LeaveState::Outside;
+    bool const inside = insideBox(
+        task.plan.landMinX,
+        task.plan.landMaxX,
+        task.plan.landMinY,
+        task.plan.landMaxY,
+        task.plan.landMinZ,
+        task.plan.landMaxZ
+    );
+    log::get().info(
+        "任务 #{} 已绑定领地范围 X {}~{} Z {}~{} Y {}~{}（inside={}）",
+        task.id,
+        task.plan.landMinX,
+        task.plan.landMaxX,
+        task.plan.landMinZ,
+        task.plan.landMaxZ,
+        task.plan.landMinY,
+        task.plan.landMaxY,
+        inside
+    );
+    return inside ? LeaveState::Inside : LeaveState::Outside;
 }
 
 // ---------------------------------------------------------------------------

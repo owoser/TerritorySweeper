@@ -126,7 +126,7 @@ void handleStickUse(Player& player, BlockPos const& pos) {
     TS_DBG(
         "[interact] 木棍点击 {} 领地#{} 角色={} 坐标=({},{},{})",
         player.getRealName(),
-        land->land.id,
+        land->key,
         land->roleName(),
         pos.x,
         pos.y,
@@ -135,12 +135,12 @@ void handleStickUse(Player& player, BlockPos const& pos) {
 
     auto& manager = TaskManager::getInstance();
 
-    if (auto* task = manager.taskOfLand(land->land.id); task) {
+    if (auto* task = manager.taskOfLand(land->key); task) {
         TS_DBG("[interact] 命中任务 #{} → 打开管理面板", task->id);
         form::openManage(player, *task);
         return;
     }
-    if (auto* bill = manager.billOfLand(land->land.id); bill) {
+    if (auto* bill = manager.billOfLand(land->key); bill) {
         form::openBill(player, *bill);
         return;
     }

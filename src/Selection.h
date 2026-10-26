@@ -25,6 +25,7 @@ struct PlayerLand {
     compat::LandSnapshot land;
     compat::LandRole     role{compat::LandRole::Actor};
     bool                 isOperator{false};
+    int64_t              key{0}; ///< 领地稳定键（PLand LandID 或 AABB 派生），任务/账单按它归属
 
     [[nodiscard]] bool canManage() const {
         return isOperator || role == compat::LandRole::Owner || role == compat::LandRole::Admin;
