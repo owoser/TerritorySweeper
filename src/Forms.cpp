@@ -242,7 +242,7 @@ void openPayment(Player& player, SweepPlan plan) {
 
     auto planCopy = plan;
 
-    form.appendButton("§a立即支付", [planCopy, target](Player& p) {
+    form.appendButton("§0立即支付", [planCopy, target](Player& p) {
         auto& service = economy::EconomyService::getInstance();
 
         if (!service.available()) {
@@ -276,7 +276,7 @@ void openPayment(Player& player, SweepPlan plan) {
         );
     });
 
-    form.appendButton("§6挂起账单", [planCopy, target](Player& p) {
+    form.appendButton("§0挂起账单", [planCopy, target](Player& p) {
         PendingBill bill;
         bill.ownerName = target.name;
         bill.ownerXuid = target.xuid;
@@ -289,7 +289,7 @@ void openPayment(Player& player, SweepPlan plan) {
         p.sendMessage("§6[领地清扫] 已挂起账单，回到本领地使用木棍点击地面即可继续支付。");
     });
 
-    form.appendButton("§7关闭任务", [](Player& p) {
+    form.appendButton("§0关闭任务", [](Player& p) {
         SelectionManager::getInstance().clear(p);
         p.sendMessage("§7已关闭本次清扫任务，未产生任何费用。");
     });
@@ -334,12 +334,12 @@ void openManage(Player& player, SweepTask& task) {
     uint64_t id = task.id;
 
     if (task.state == TaskState::Running) {
-        form.appendButton("§e暂停任务", [id](Player& p) {
+        form.appendButton("§0暂停任务", [id](Player& p) {
             TaskManager::getInstance().pauseTask(id, "领主手动暂停");
             p.sendMessage("§e[领地清扫] 任务已暂停。");
         });
     } else {
-        form.appendButton("§a继续任务", [id](Player& p) {
+        form.appendButton("§0继续任务", [id](Player& p) {
             if (TaskManager::getInstance().resumeTask(id)) {
                 p.sendMessage("§a[领地清扫] 任务已继续。");
             } else {
@@ -348,8 +348,8 @@ void openManage(Player& player, SweepTask& task) {
         });
     }
 
-    form.appendButton("§c停止任务", [id](Player& p) { openKillConfirm(p, id); });
-    form.appendButton("§7关闭菜单", [](Player&) {});
+    form.appendButton("§0停止任务", [id](Player& p) { openKillConfirm(p, id); });
+    form.appendButton("§0关闭菜单", [](Player&) {});
 
     form.sendTo(player);
 }
@@ -402,7 +402,7 @@ void openBill(Player& player, PendingBill const& bill) {
     SimpleForm form("领地清扫账单");
     form.setContent(content);
 
-    form.appendButton("§a立即支付", [plan](Player& p) {
+    form.appendButton("§0立即支付", [plan](Player& p) {
         auto& service = economy::EconomyService::getInstance();
 
         economy::ChargeTarget target;
@@ -429,9 +429,9 @@ void openBill(Player& player, PendingBill const& bill) {
         p.sendMessage("§a[领地清扫] 账单已支付，任务开始。");
     });
 
-    form.appendButton("§6保留账单", [](Player& p) { p.sendMessage("§7账单已保留，稍后可再次支付。"); });
+    form.appendButton("§0保留账单", [](Player& p) { p.sendMessage("§7账单已保留，稍后可再次支付。"); });
 
-    form.appendButton("§c关闭账单", [plan](Player& p) {
+    form.appendButton("§0关闭账单", [plan](Player& p) {
         TaskManager::getInstance().dropBill(plan.landId);
         SelectionManager::getInstance().clear(p);
         p.sendMessage("§7账单已关闭。");
@@ -450,7 +450,7 @@ void openTaskList(Player& player) {
 
     SimpleForm form("领地清扫任务列表");
     form.setContent(content);
-    form.appendButton("§7关闭", [](Player&) {});
+    form.appendButton("§0关闭", [](Player&) {});
     form.sendTo(player);
 }
 
