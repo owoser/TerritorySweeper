@@ -32,8 +32,8 @@ struct Config {
     int playerTaskLimit{1};
 
     // ---- 显示 ----
-    /// BossBar 进度条（BossEventPacket）。定位进服异常时先关掉它。
-    bool bossBarEnabled{false};
+    /// BossBar 进度条（BossEvent + AddActor 假实体）。进服异常时可用它快速排查。
+    bool bossBarEnabled{true};
     /// DebugShape 选区 / 任务区域线框
     bool regionFrameEnabled{true};
 

@@ -113,6 +113,8 @@ xmake
 // moneyname               货币显示名
 // global_task_limit       全服并发任务上限（默认 3）
 // player_task_limit       单玩家并发上限（默认 1）
+// bossbar_enabled        是否显示 BossBar 进度条（排查进服异常时先关掉）
+// region_frame_enabled   是否显示选区/任务区域线框（依赖 DebugShape）
 // layer_countdown_seconds 每层倒计时（默认 10）
 // chunked_clean_enabled   是否启用分块（默认 true）
 // chunk_matrix_width/depth 分块尺寸（默认 10x10）
@@ -195,7 +197,27 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 
 ---
 
-## 9. 已知取舍
+## 9. BossBar 发包顺序（重要）
+
+Bedrock 的 BossBar 是**挂在实体上的**，不是"无名进度条"。因此每次刷新必须按
+LSE `PlayerClass::setBossBar`（也就是 YEssential/Fcam 用的那个 API）的顺序三连发：
+
+1. `BossEvent(Remove)` —— 清掉同 id 的旧条
+2. `AddActorPacket` —— 造一个看不见的 `player` 假实体（位置在维度最低高度 -64），
+   `mEntityId = mRuntimeId = bossId`；其余字段留空
+3. `BossEvent(Add)` —— `mBossID/mName/mHealthPercent(0~1)/mColor/mOverlay`
+
+`BossBar::hide` 只发 `BossEvent(Remove)`。
+
+> 只发第 3 步（缺 `AddActorPacket`）会让客户端拿着一个指向不存在实体的 boss id 去渲染，
+> 表现为客户端报错/掉线。
+>
+> `AddActorPacket` 的构造函数未导出，必须通过 `MinecraftPackets::createPacket(MinecraftPacketIds::AddActor)`
+> 创建（与 LSE 一致）。若运行时该工厂不可用，会跳过 AddActor 并仅发送 BossEvent，不会崩服。
+
+排查开关：`bossbar_enabled` / `region_frame_enabled`，任一关闭即可隔离显示层。
+
+## 10. 已知取舍
 
 1. **长加载**：未使用 BDS TickingArea（其 _addArea 需要 LevelStorage，且会与玩家自建区域混淆），
    改为在清扫过程中按区块触达保持区块已加载状态，避免玩家离开导致区块卸载。
