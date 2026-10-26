@@ -485,6 +485,16 @@ void TaskManager::updateBossBar(SweepTask& task, Player& player) {
 
     if (!task.bossShown) {
         visual::BossBar::show(player, bossId, title, ratio, color);
+        // 任务运行/恢复时重新显示任务区域边框（清理期间常驻）
+        visual::RegionRenderer::drawBox(
+            player,
+            "task-frame",
+            AABB{
+                Vec3{(float)task.plan.minX, (float)task.plan.minY, (float)task.plan.minZ},
+                Vec3{(float)task.plan.maxX + 1.0f, (float)task.plan.maxY + 1.0f, (float)task.plan.maxZ + 1.0f}
+            },
+            mce::Color{80, 220, 255, 180}
+        );
         task.bossShown = true;
     } else {
         visual::BossBar::update(player, bossId, title, ratio, color);

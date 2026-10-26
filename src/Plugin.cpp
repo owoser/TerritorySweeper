@@ -36,13 +36,15 @@ bool Plugin::load() {
         logger.error("配置文件加载失败，插件将不会启用。");
         return false;
     }
-
-    compat::runStartupSelfCheck();
     return true;
 }
 
 bool Plugin::enable() {
     auto& logger = log::get();
+
+    // 依赖插件（PLand / DebugShape / LegacyMoney）在 enable 阶段才真正就绪，
+    // 因此 API 自检必须放在这里，而不是 load 阶段。
+    compat::runStartupSelfCheck();
 
     if (!compat::PLandCompat::getInstance().available()) {
         logger.warn("PLand 不可用：领地校验无法进行，木棍与 /ts 均会提示“你不在任何领地内”。");
