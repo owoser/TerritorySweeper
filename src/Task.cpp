@@ -1,8 +1,11 @@
 #include "Task.h"
 
 #include "Config.h"
+#include "Database.h"
+#include "Economy.h"
 #include "Global.h"
 #include "Plugin.h"
+#include "TaskStore.h"
 #include "Visual.h"
 
 #include "ll/api/service/Bedrock.h"
@@ -14,11 +17,8 @@
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/dimension/Dimension.h"
 
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <cmath>
-#include <fstream>
 #include <unordered_map>
 
 namespace ts {
@@ -27,10 +27,6 @@ namespace {
 
 constexpr int64_t kBlocksPerTickBudget = 8192;
 constexpr char const* kBedrock = "minecraft:bedrock";
-
-std::filesystem::path stateFilePath() {
-    return getPlugin().getSelf().getDataDir() / "tasks.json";
-}
 
 BlockSource* blockSourceFor(int dimId) {
     auto level = ll::service::getLevel();
@@ -325,12 +321,15 @@ std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId
 }
 
 void TaskManager::storeBill(PendingBill bill) {
-    if (auto* existing = billOfLand(bill.plan.landId); existing) {
+    auto landId = bill.plan.landId;
+    if (auto* existing = billOfLand(landId); existing) {
         *existing = std::move(bill);
     } else {
         mBills.push_back(std::move(bill));
     }
-    saveState();
+    if (auto* stored = billOfLand(landId); stored) {
+        db::upsertBill(*stored);
+    }
 }
 
 bool TaskManager::dropBill(int64_t landId) {
@@ -338,7 +337,7 @@ bool TaskManager::dropBill(int64_t landId) {
     std::erase_if(mBills, [&](PendingBill const& b) { return b.plan.landId == landId; });
     bool removed = mBills.size() != before;
     if (removed) {
-        saveState();
+        db::deleteBill(landId);
     }
     return removed;
 }
@@ -380,9 +379,10 @@ SweepTask* TaskManager::startTask(Player& player, SweepPlan plan, bool alreadyPa
     task.paidAmount  = alreadyPaid ? task.plan.totalPrice : 0;
 
     mTasks.push_back(std::move(task));
-    saveState();
 
     auto* created = &mTasks.back();
+    db::upsertTask(*created);
+    db::setMetaInt("next_task_id", (int64_t)mNextId);
     log::get().info(
         "任务 #{} 已创建：领主={} 领地={} 范围={}x{} 层数={} 方向={} 分块={} 费用={}",
         created->id,
@@ -413,7 +413,7 @@ void TaskManager::pauseTask(uint64_t id, std::string const& reason) {
         owner->sendMessage("§e[领地清扫] 任务已暂停：" + reason);
     }
     log::get().info("任务 #{} 已暂停：{}", id, reason);
-    saveState();
+    db::upsertTask(*task);
 }
 
 bool TaskManager::resumeTask(uint64_t id) {
@@ -428,7 +428,7 @@ bool TaskManager::resumeTask(uint64_t id) {
         updateBossBar(*task, *owner);
         owner->sendMessage("§a[领地清扫] 任务已继续。");
     }
-    saveState();
+    db::upsertTask(*task);
     return true;
 }
 
@@ -444,7 +444,7 @@ void TaskManager::finishTask(uint64_t id) {
     }
     log::get().info("任务 #{} 已完成。", id);
     std::erase_if(mTasks, [&](SweepTask const& t) { return t.id == id; });
-    saveState();
+    db::deleteTask(id);
 }
 
 void TaskManager::killTask(uint64_t id, std::string const& reason) {
@@ -452,14 +452,28 @@ void TaskManager::killTask(uint64_t id, std::string const& reason) {
     if (!task) {
         return;
     }
+
+    // 退款必须在移除任务之前计算，保证金额与实际进度一致
+    int64_t const expected = computeRefund(*task);
+    int64_t const refunded = refundTask(*task, reason);
+
     if (auto* owner = findOwner(*task); owner) {
         visual::BossBar::hide(*owner, visual::BossBar::idFor("task-" + std::to_string(id)));
         visual::RegionRenderer::clearBox(*owner, "task-frame");
-        owner->sendMessage("§c[领地清扫] 任务已终止：" + reason);
+
+        std::string message = "§c[领地清扫] 任务已终止：" + reason;
+        if (refunded > 0) {
+            message += "，已按未完成比例退还 " + std::to_string(refunded) + " "
+                     + ConfigManager::getInstance().get().moneyname;
+        } else if (expected > 0) {
+            message += "，退款失败（" + std::to_string(expected) + "），请联系管理员";
+        }
+        owner->sendMessage(message);
     }
-    log::get().info("任务 #{} 已终止：{}", id, reason);
+
+    log::get().info("任务 #{} 已终止：{}（退款 {}）", id, reason, refunded);
     std::erase_if(mTasks, [&](SweepTask const& t) { return t.id == id; });
-    saveState();
+    db::deleteTask(id);
 }
 
 void TaskManager::updateBossBar(SweepTask& task, Player& player) {
@@ -624,7 +638,7 @@ void TaskManager::stepTask(SweepTask& task) {
     if (owner) {
         updateBossBar(task, *owner);
     }
-    saveState();
+    db::upsertTask(task);
 }
 
 // ---------------------------------------------------------------------------
@@ -709,163 +723,96 @@ void TaskManager::onPlayerQuit(Player const& player) {
 void TaskManager::refreshOwnerPresence() {}
 
 // ---------------------------------------------------------------------------
-// 持久化
+// 退款计算
 // ---------------------------------------------------------------------------
 
-namespace {
-nlohmann::json planToJson(SweepPlan const& p) {
-    nlohmann::json j;
-    j["dimId"]       = p.dimId;
-    j["minX"]        = p.minX;
-    j["maxX"]        = p.maxX;
-    j["minZ"]        = p.minZ;
-    j["maxZ"]        = p.maxZ;
-    j["startY"]      = p.startY;
-    j["minY"]        = p.minY;
-    j["maxY"]        = p.maxY;
-    j["direction"]   = (int)p.direction;
-    j["layerCount"]  = p.layerCount;
-    j["layerAuto"]   = p.layerCountAuto;
-    j["levelname"]   = p.levelname;
-    j["unitPrice"]   = p.unitPrice;
-    j["totalPrice"]  = p.totalPrice;
-    j["chunked"]     = p.chunked;
-    j["chunkWidth"]  = p.chunkWidth;
-    j["chunkDepth"]  = p.chunkDepth;
-    j["chunkInterval"] = p.chunkInterval;
-    j["layerCountdown"] = p.layerCountdown;
-    j["landId"]      = p.landId;
-    j["landName"]    = p.landName;
-    return j;
+int remainingPermille(SweepTask const& task) {
+    int const totalUnits = task.plan.layerCount * task.chunksPerLayer();
+    if (totalUnits <= 0) {
+        return 0;
+    }
+    int64_t const doneUnits = (int64_t)task.layersDone * task.chunksPerLayer() + task.chunkIndex;
+    if (doneUnits <= 0) {
+        return 1000;
+    }
+    if (doneUnits >= totalUnits) {
+        return 0;
+    }
+    int const permille = (int)((int64_t)(totalUnits - doneUnits) * 1000 / totalUnits);
+    return std::clamp(permille, 0, 1000);
 }
 
-SweepPlan planFromJson(nlohmann::json const& j) {
-    SweepPlan p;
-    p.dimId          = j.value("dimId", 0);
-    p.minX           = j.value("minX", 0);
-    p.maxX           = j.value("maxX", 0);
-    p.minZ           = j.value("minZ", 0);
-    p.maxZ           = j.value("maxZ", 0);
-    p.startY         = j.value("startY", 0);
-    p.minY           = j.value("minY", 0);
-    p.maxY           = j.value("maxY", 0);
-    p.direction      = (SweepDirection)j.value("direction", 1);
-    p.layerCount     = j.value("layerCount", 0);
-    p.layerCountAuto = j.value("layerAuto", false);
-    p.levelname      = j.value("levelname", std::string{});
-    p.unitPrice      = j.value("unitPrice", (int64_t)0);
-    p.totalPrice     = j.value("totalPrice", (int64_t)0);
-    p.chunked        = j.value("chunked", false);
-    p.chunkWidth     = j.value("chunkWidth", 10);
-    p.chunkDepth     = j.value("chunkDepth", 10);
-    p.chunkInterval  = j.value("chunkInterval", 2);
-    p.layerCountdown = j.value("layerCountdown", 10);
-    p.landId         = j.value("landId", (int64_t)0);
-    p.landName       = j.value("landName", std::string{});
-    return p;
+int64_t computeRefund(SweepTask const& task) {
+    if (task.paidAmount <= 0) {
+        return 0;
+    }
+    int const totalUnits = task.plan.layerCount * task.chunksPerLayer();
+    if (totalUnits <= 0) {
+        return task.paidAmount;
+    }
+    int64_t const doneUnits = (int64_t)task.layersDone * task.chunksPerLayer() + task.chunkIndex;
+    if (doneUnits <= 0) {
+        return task.paidAmount;
+    }
+    if (doneUnits >= totalUnits) {
+        return 0;
+    }
+    return task.paidAmount * (int64_t)(totalUnits - doneUnits) / (int64_t)totalUnits;
 }
-} // namespace
 
-void TaskManager::saveState() const {
-    nlohmann::json root;
-    root["nextId"] = mNextId;
-
-    auto bills = nlohmann::json::array();
-    for (auto const& bill : mBills) {
-        nlohmann::json j;
-        j["ownerName"] = bill.ownerName;
-        j["ownerXuid"] = bill.ownerXuid;
-        j["ownerUuid"] = bill.ownerUuid.asString();
-        j["createdAt"] = bill.createdAt;
-        j["plan"]      = planToJson(bill.plan);
-        bills.push_back(j);
-    }
-    root["bills"] = bills;
-
-    auto tasks = nlohmann::json::array();
-    for (auto const& task : mTasks) {
-        nlohmann::json j;
-        j["id"]            = task.id;
-        j["ownerName"]     = task.ownerName;
-        j["ownerXuid"]     = task.ownerXuid;
-        j["ownerUuid"]     = task.ownerUuid.asString();
-        j["state"]         = (int)task.state;
-        j["layersDone"]    = task.layersDone;
-        j["countdown"]     = task.countdown;
-        j["chunkIndex"]    = task.chunkIndex;
-        j["chunkCooldown"] = task.chunkCooldown;
-        j["cursor"]        = task.cursor;
-        j["pausedSeconds"] = task.pausedSeconds;
-        j["paidAmount"]    = task.paidAmount;
-        j["plan"]          = planToJson(task.plan);
-        tasks.push_back(j);
-    }
-    root["tasks"] = tasks;
-
-    std::error_code ec;
-    auto            path = stateFilePath();
-    std::filesystem::create_directories(path.parent_path(), ec);
-
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        return;
-    }
-    out << root.dump(2);
-}
+// ---------------------------------------------------------------------------
+// 持久化（SQLite）
+// ---------------------------------------------------------------------------
 
 void TaskManager::loadState() {
-    std::ifstream in(stateFilePath(), std::ios::binary);
-    if (!in) {
-        return;
-    }
-
-    nlohmann::json root;
-    try {
-        in >> root;
-    } catch (...) {
-        log::get().warn("任务状态文件损坏，已忽略。");
-        return;
-    }
-
-    mNextId = root.value("nextId", (uint64_t)1);
-
-    mBills.clear();
-    if (root.contains("bills") && root["bills"].is_array()) {
-        for (auto const& j : root["bills"]) {
-            PendingBill bill;
-            bill.ownerName = j.value("ownerName", std::string{});
-            bill.ownerXuid = j.value("ownerXuid", std::string{});
-            bill.ownerUuid = mce::UUID::fromString(j.value("ownerUuid", std::string{}));
-            bill.createdAt = j.value("createdAt", (int64_t)0);
-            bill.plan      = planFromJson(j.value("plan", nlohmann::json::object()));
-            mBills.push_back(std::move(bill));
-        }
-    }
-
-    mTasks.clear();
-    if (root.contains("tasks") && root["tasks"].is_array()) {
-        for (auto const& j : root["tasks"]) {
-            SweepTask task;
-            task.id            = j.value("id", (uint64_t)0);
-            task.ownerName     = j.value("ownerName", std::string{});
-            task.ownerXuid     = j.value("ownerXuid", std::string{});
-            task.ownerUuid     = mce::UUID::fromString(j.value("ownerUuid", std::string{}));
-            task.state         = TaskState::Paused; // 重启后一律暂停，等待领主继续
-            task.layersDone    = j.value("layersDone", 0);
-            task.countdown     = j.value("countdown", 0);
-            task.chunkIndex    = j.value("chunkIndex", 0);
-            task.chunkCooldown = j.value("chunkCooldown", 0);
-            task.cursor        = j.value("cursor", (int64_t)0);
-            task.pausedSeconds = 0;
-            task.paidAmount    = j.value("paidAmount", (int64_t)0);
-            task.plan          = planFromJson(j.value("plan", nlohmann::json::object()));
-            mTasks.push_back(std::move(task));
-        }
+    mTasks  = db::loadTasks();
+    mBills  = db::loadBills();
+    mNextId = (uint64_t)db::getMetaInt("next_task_id", 1);
+    if (mNextId == 0) {
+        mNextId = 1;
     }
 
     if (!mBills.empty() || !mTasks.empty()) {
-        log::get().info("已恢复 {} 个待支付账单、{} 个清扫任务（任务统一恢复为暂停状态）", mBills.size(), mTasks.size());
+        log::get().info(
+            "已从数据库恢复 {} 个待支付账单、{} 个清扫任务（任务统一恢复为暂停状态）",
+            mBills.size(),
+            mTasks.size()
+        );
     }
+}
+
+/// 按未完成工作量比例退款；返回实际到账金额（失败为 0）
+int64_t TaskManager::refundTask(SweepTask& task, std::string const& reason) {
+    int64_t const amount = computeRefund(task);
+    if (amount <= 0) {
+        log::get().debug("任务 #{} 无剩余工作量，无需退款。", task.id);
+        return 0;
+    }
+
+    economy::ChargeTarget target;
+    target.xuid = task.ownerXuid;
+    target.name = task.ownerName;
+    target.uuid = task.ownerUuid;
+
+    auto& economyService = economy::EconomyService::getInstance();
+    bool  credited       = economyService.add(target, amount);
+
+    db::recordRefund(task.id, task.ownerName, task.ownerXuid, amount, remainingPermille(task), reason);
+
+    if (!credited) {
+        log::get().error(
+            "退款失败（任务 #{}，玩家 {}，金额 {}，后端 {}）。任务仍会终止，请管理员手动补偿。",
+            task.id,
+            task.ownerName,
+            amount,
+            economyService.describe()
+        );
+        return 0;
+    }
+
+    log::get().info("任务 #{} 终止退款 {}（剩余工作量 {}‰），玩家 {}", task.id, amount, remainingPermille(task),
+                    task.ownerName);
+    return amount;
 }
 
 void TaskManager::init() { loadState(); }
@@ -878,7 +825,6 @@ void TaskManager::shutdown() {
             visual::RegionRenderer::clearBox(*owner, "task-frame");
         }
     }
-    saveState();
     mTasks.clear();
     mBills.clear();
 }

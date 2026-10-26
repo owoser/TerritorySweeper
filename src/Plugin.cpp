@@ -3,10 +3,12 @@
 #include "Commands.h"
 #include "Compat.h"
 #include "Config.h"
+#include "Database.h"
 #include "Economy.h"
 #include "Global.h"
 #include "Interaction.h"
 #include "Task.h"
+#include "TaskStore.h"
 
 #include "ll/api/mod/RegisterHelper.h"
 
@@ -55,6 +57,19 @@ bool Plugin::enable() {
 
     economy::EconomyService::getInstance().init();
 
+    // 任务与账单持久化（SQLite）；失败时降级为仅内存模式，不阻断启用
+    auto dbPath = getSelf().getDataDir() / "territorysweeper.db";
+    if (db::Database::getInstance().open(dbPath) && db::initSchema()) {
+        logger.info("任务持久化已就绪: {}", db::Database::getInstance().path());
+    } else {
+        logger.error("数据库初始化失败，任务与账单将仅在内存中保存（重启后丢失）。");
+    }
+
+    std::error_code ec;
+    if (auto legacy = getSelf().getDataDir() / "tasks.json"; std::filesystem::exists(legacy, ec)) {
+        logger.warn("检测到旧版 JSON 数据文件 {}，现已改用 SQLite，该文件不再读取，可手动删除。", legacy.string());
+    }
+
     TaskManager::getInstance().init();
     command::registerCommands();
     interaction::registerListeners();
@@ -66,6 +81,7 @@ bool Plugin::enable() {
 bool Plugin::disable() {
     interaction::unregisterListeners();
     TaskManager::getInstance().shutdown();
+    db::Database::getInstance().close();
     log::get().info("TerritorySweeper 已停用。");
     return true;
 }

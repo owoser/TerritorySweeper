@@ -336,12 +336,25 @@ void openManage(Player& player, SweepTask& task) {
 }
 
 void openKillConfirm(Player& player, uint64_t taskId) {
-    ModalForm form(
-        "终止清扫任务",
-        "确定要终止该清扫任务吗？\n§c终止后本次已支付费用不会退还，且已清理区域不会恢复。",
-        "§c确定终止",
-        "§7返回"
-    );
+    auto* task = TaskManager::getInstance().taskById(taskId);
+    if (!task) {
+        player.sendMessage("§c[领地清扫] 任务不存在或已结束。");
+        return;
+    }
+
+    int64_t const refund = computeRefund(*task);
+
+    std::string content =
+        "确定要终止该清扫任务吗？\n\n"
+        "已支付：" + money(task->paidAmount) + "\n"
+        "当前进度：" + std::to_string(task->progressPercent()) + "%（已完成 "
+        + std::to_string(task->layersDone) + "/" + std::to_string(task->plan.layerCount) + " 层）\n"
+        "预计退款：§e" + money(refund) + "\n"
+        "§7退款按未完成工作量比例计算，实时到账。\n"
+        "§c终止后已清理区域不会恢复。";
+
+    std::string const title = "终止清扫任务";
+    ModalForm           form(title, content, "§c确定终止", "§7返回");
     form.sendTo(player, [taskId](Player& p, ll::form::ModalFormResult result, ll::form::FormCancelReason) {
         if (!result || *result != ll::form::ModalFormSelectedButton::Upper) {
             p.sendMessage("§7已取消终止操作。");

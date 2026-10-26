@@ -304,6 +304,7 @@ bool LLMoneyCompat::probe() {
     mReport.clear();
     mGet    = nullptr;
     mReduce = nullptr;
+    mAdd    = nullptr;
 
     if (!mSymbols.open("LegacyMoney")) {
         mReport.push_back({"LegacyMoney 模块句柄", "", false, nullptr});
@@ -316,6 +317,11 @@ bool LLMoneyCompat::probe() {
     mReduce = reinterpret_cast<ReduceFn>(mSymbols.resolve("LLMoney_Reduce"));
     mReport.push_back({"LLMoney_Reduce(xuid, amount)", "LLMoney_Reduce", mReduce != nullptr,
                        reinterpret_cast<void*>(mReduce)});
+
+    // LLMoney_Add 用于终止任务时按比例退款；缺失只影响退款，不影响正常扣款
+    mAdd = reinterpret_cast<AddFn>(mSymbols.resolve("LLMoney_Add"));
+    mReport.push_back({"LLMoney_Add(xuid, amount)", "LLMoney_Add", mAdd != nullptr,
+                       reinterpret_cast<void*>(mAdd)});
 
     mAvailable = mGet && mReduce;
     return mAvailable;
@@ -334,6 +340,13 @@ bool LLMoneyCompat::reduce(std::string const& xuid, int64_t amount) const {
         return false;
     }
     return mReduce(xuid, static_cast<long long>(amount));
+}
+
+bool LLMoneyCompat::add(std::string const& xuid, int64_t amount) const {
+    if (!mAdd) {
+        return false;
+    }
+    return mAdd(xuid, static_cast<long long>(amount));
 }
 
 // ---------------------------------------------------------------------------

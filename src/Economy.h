@@ -45,6 +45,9 @@ public:
     /// 原子扣款：先校验余额，充足才扣；返回是否扣款成功
     [[nodiscard]] bool reduce(ChargeTarget const& target, int64_t amount) const;
 
+    /// 入账（用于终止任务时按比例退款）；返回是否成功
+    [[nodiscard]] bool add(ChargeTarget const& target, int64_t amount) const;
+
 private:
     EconomyService() = default;
 

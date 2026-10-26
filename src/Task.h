@@ -101,6 +101,12 @@ struct SweepTask {
     [[nodiscard]] bool finished() const { return layersDone >= plan.layerCount; }
 };
 
+/// 未完成工作量的千分比（0..1000），按"层 × 子分块"粒度统计
+[[nodiscard]] int remainingPermille(SweepTask const& task);
+
+/// 按未完成比例计算应退金额（以实际扣款额 paidAmount 为基准，向下取整）
+[[nodiscard]] int64_t computeRefund(SweepTask const& task);
+
 /// 挂起账单
 struct PendingBill {
     std::string ownerName;
@@ -158,8 +164,9 @@ private:
     void            stepTask(SweepTask& task);
     void            clearUnit(SweepTask& task);
     void            updateBossBar(SweepTask& task, Player& player);
-    void            saveState() const;
     void            loadState();
+    /// 按未完成比例退款，返回实际到账金额（0 表示无需退款或退款失败）
+    int64_t         refundTask(SweepTask& task, std::string const& reason);
     [[nodiscard]] Player* findOwner(SweepTask const& task) const;
 
     std::vector<SweepTask>   mTasks;

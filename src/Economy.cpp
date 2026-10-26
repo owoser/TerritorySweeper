@@ -181,4 +181,39 @@ bool EconomyService::reduce(ChargeTarget const& target, int64_t amount) const {
     }
 }
 
+bool EconomyService::add(ChargeTarget const& target, int64_t amount) const {
+    if (amount <= 0) {
+        return true;
+    }
+
+    switch (mKind) {
+    case Kind::LLMoney:
+        return compat::LLMoneyCompat::getInstance().add(target.xuid, amount);
+
+    case Kind::Scoreboard: {
+        auto level = ll::service::getLevel();
+        if (!level || !target.valid()) {
+            return false;
+        }
+        auto& board     = level->getScoreboard();
+        auto* objective = board.getObjective(mObjective);
+        if (!objective) {
+            return false;
+        }
+        ScoreboardOperationResult result;
+        board.modifyPlayerScore(
+            result,
+            board.getScoreboardId(target.name),
+            *objective,
+            (int)amount,
+            PlayerScoreSetFunction::Add
+        );
+        return true;
+    }
+
+    default:
+        return false;
+    }
+}
+
 } // namespace ts::economy

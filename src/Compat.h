@@ -237,12 +237,14 @@ public:
 
     [[nodiscard]] bool    get(std::string const& xuid, int64_t& out) const;
     [[nodiscard]] bool    reduce(std::string const& xuid, int64_t amount) const;
+    [[nodiscard]] bool    add(std::string const& xuid, int64_t amount) const;
 
 private:
     LLMoneyCompat() = default;
 
     using GetFn    = long long (*)(std::string);
     using ReduceFn = bool (*)(std::string, long long);
+    using AddFn    = bool (*)(std::string, long long);
 
     ModuleSymbols mSymbols;
     bool          mAvailable{false};
@@ -250,6 +252,7 @@ private:
 
     GetFn    mGet{nullptr};
     ReduceFn mReduce{nullptr};
+    AddFn    mAdd{nullptr};
 };
 
 // ---------------------------------------------------------------------------

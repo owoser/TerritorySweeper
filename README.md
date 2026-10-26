@@ -15,6 +15,8 @@
 | 分块清理 | 面积超过阈值时按 10×10 矩阵分批处理，块间有间隔，边缘残差自动裁剪 |
 | 双经济后端 | 默认 LLMoney，可切换为计分板（Scoreboard） |
 | 挂起账单 | 未付款方案按领地保存并可跨重启恢复；再次回到领地木棍点击即可继续支付 |
+| 按比例退款 | 终止任务时按未完成工作量比例退还已付费用（手动终止与暂停超时自动终止同样适用），退款写入审计表 |
+| SQLite 持久化 | 任务、账单、退款审计存于本地数据库，增量写入，WAL 保证崩溃安全 |
 | 视觉反馈 | 选点时显示领地金色边框，选完自动关闭；清理期间常驻显示任务区域青色边框 |
 | 看门狗 | 领主离开领地 15 秒自动暂停；暂停 300 秒自动终止；重启后任务统一恢复为暂停 |
 | API 自检 | 启动时逐符号解析依赖插件导出，缺失只降级对应功能并打印报告，不会导致插件加载失败 |
@@ -45,6 +47,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\repair-xmake-env.ps1
 xmake f -y -p windows -a x64 -m release
 xmake
 ```
+
+构建依赖：LeviLamina SDK + **sqlite3**（静态链接，随插件 DLL 分发，不引入额外运行时 DLL 依赖）。
 
 产物：`bin/TerritorySweeper/`（TerritorySweeper.dll + manifest.json + pdb）。
 
@@ -137,21 +141,55 @@ src/
   Economy.cpp/.h       双后端经济（LLMoney / Scoreboard）
   Visual.cpp/.h        BossBar（BossEventPacket） + DebugShape 线框
   Selection.cpp/.h     领地上下文 + 选区状态
-  Task.cpp/.h          任务模型、调度器、清扫引擎、看门狗、持久化
+  Task.cpp/.h          任务模型、调度器、清扫引擎、看门狗、退款计算
   Forms.cpp/.h         表单流转
   Commands.cpp/.h      /ts 指令
   Interaction.cpp/.h   木棍监听、玩家上下线、每秒驱动
+  Database.cpp/.h      SQLite 轻量封装（连接、预编译语句、事务）
+  TaskStore.cpp/.h     表结构 + 任务/账单/退款审计的 CRUD
   MemoryOperators.cpp  统一内存分配运算符（LL3 强制要求）
 ```
 
-数据文件：`plugins/TerritorySweeper/data/tasks.json`（任务与账单持久化）
+数据文件：`plugins/TerritorySweeper/data/territorysweeper.db`（SQLite，WAL 模式）
+
+表结构：
+
+| 表 | 说明 |
+| :--- | :--- |
+| `meta` | 键值元数据（任务自增号等） |
+| `tasks` | 进行中 / 已暂停任务（含完整 SweepPlan 展平列与进度游标） |
+| `bills` | 待支付账单（`land_id` 为主键，一块领地至多一条） |
+| `refunds` | 退款审计（任务号、金额、剩余工作量千分比、原因、时间） |
+
+> WAL 模式会额外生成 `territorysweeper.db-wal` 与 `-shm`，属正常现象；备份请一并复制或先停服。
+> 若数据库打开失败，插件降级为「仅内存模式」并输出 error 日志，不影响服务器运行。
 
 ---
 
-## 8. 已知取舍
+## 8. 退款规则
+
+终止任务时按**未完成工作量比例**退还已支付费用，适用于三条路径：`/ts kill`、管理面板「停止任务」、暂停超时自动终止。
+
+```
+totalUnits = layerCount × chunksPerLayer()   // 未分块时 chunksPerLayer = 1
+doneUnits  = layersDone × chunksPerLayer() + chunkIndex
+退款       = paidAmount × (totalUnits - doneUnits) / totalUnits   // 向下取整
+```
+
+- 基准是**实际扣款额 `paidAmount`**，不是按当前配置重算的价格，避免改价/折扣导致多退。
+- 非分块任务按「层」粒度退款；分块任务按「层 × 子分块」粒度退款，与真实完成度一致。
+- 已开始但未清理完的当前子分块不予退款（它占用了服务器时间片）。
+- 退款即时到账（LLMoney 按 XUID / 计分板按玩家名），离线玩家同样可到账。
+- 每次退款写入 `refunds` 表；若经济后端不可用，仍会终止任务并输出 error 日志以便人工补偿。
+- 任务正常完成（跑到最后一层）不产生退款。
+
+示例（已付 100，共 10 层、未分块）：进度 0 层退 100；4 层退 60；9 层退 10；10 层退 0。
+
+---
+
+## 9. 已知取舍
 
 1. **长加载**：未使用 BDS TickingArea（其 _addArea 需要 LevelStorage，且会与玩家自建区域混淆），
    改为在清扫过程中按区块触达保持区块已加载状态，避免玩家离开导致区块卸载。
 2. **自动层数扫描**：选区较大时逐列扫描成本较高，扫描在表单提交时一次性执行；
    极端大选区建议手动输入层数。
-3. **终止不退款**：按当前草案，/ts kill 与停止确认都不会退还未消耗费用。

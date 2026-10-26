@@ -22,6 +22,9 @@ add_requireconfs("**.levilamina", {override = true, version = "26.51.6", configs
 
 add_requires("levibuildscript")
 
+-- SQLite：任务与账单持久化（静态链接，随插件 DLL 分发，不引入额外运行时 DLL 依赖）
+add_requires("sqlite3")
+
 -- 说明：
 --   PLand / DebugShape / LegacyMoney 都是运行期插件（plugins/*.dll），本插件不在链接期
 --   静态引用它们的导入库，而是启动时通过 ModManagerRegistry + GetProcAddress 动态解析
@@ -66,8 +69,8 @@ target("TerritorySweeper")
         )
     end
 
-    -- 仅链接 LeviLamina；跨插件调用全部走运行时符号解析（详见 compat/ 目录）
-    add_packages("levilamina")
+    -- 仅链接 LeviLamina 与 sqlite3；跨插件调用全部走运行时符号解析（详见 Compat.cpp）
+    add_packages("levilamina", "sqlite3")
 
     set_kind("shared")
     set_languages("c++23")
