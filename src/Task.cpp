@@ -820,54 +820,61 @@ void TaskManager::tick() {
             task.missingOwnerSeconds = 0;
         }
         bool const offline = !owner && task.missingOwnerSeconds >= 2;
+        bool const running = (task.state == TaskState::Running);
 
-        if (!cfg.pauseOnPlayerLeave) {
-            // 关闭"离开暂停"时不判定、不累计
-            task.offLandSeconds = 0;
-            task.ownerInLand    = true;
-        } else if (offline) {
-            task.ownerInLand = false;
-            ++task.offLandSeconds;
-            TS_DBG("[watchdog] task=#{} owner={} 离线 {}s", task.id, task.ownerName, task.offLandSeconds);
-            if (task.offLandSeconds >= std::max(1, cfg.playerLeavePauseSeconds)) {
-                pauseTask(task.id, "领主已离线");
-                task.leavePaused = true;
-                continue;
-            }
-        } else if (owner) {
-            auto const state  = evaluateLeaveState(task, *owner);
-            bool const inside = (state != LeaveState::Outside);
-
-            task.ownerInLand = inside;
-
-            auto const feet = owner->getFeetPos();
-            TS_DBG(
-                "[watchdog] task=#{} owner={} dim={} pos=({:.1f},{:.1f},{:.1f}) land=#{} inside={} off={}s",
-                task.id,
-                task.ownerName,
-                static_cast<int>(owner->getDimensionId()),
-                feet.x,
-                feet.y,
-                feet.z,
-                task.plan.landId,
-                inside,
-                task.offLandSeconds
-            );
-
-            if (inside) {
-                task.offLandSeconds = 0;
-            } else {
+        // 离开/离线判定只对运行中的任务生效：
+        // 已暂停的任务若继续走这段，会重复调用 pauseTask 并 continue，
+        // 导致 pausedSeconds 与 BossBar 一起冻结（释放倒计时卡死）。
+        if (running && cfg.pauseOnPlayerLeave) {
+            if (offline) {
+                task.ownerInLand = false;
                 ++task.offLandSeconds;
                 if (task.offLandSeconds >= std::max(1, cfg.playerLeavePauseSeconds)) {
+                    pauseTask(task.id, "领主已离线");
+                    task.leavePaused = true;
+                    continue;
+                }
+            } else if (owner) {
+                bool const inside  = (evaluateLeaveState(task, *owner) != LeaveState::Outside);
+                bool const changed = (inside != task.ownerInLand);
+                task.ownerInLand   = inside;
+
+                if (inside) {
+                    task.offLandSeconds = 0;
+                } else {
+                    ++task.offLandSeconds;
+                }
+
+                // 仅在状态变化或每 10 秒打一条，避免刷屏
+                if (changed || (task.offLandSeconds > 0 && task.offLandSeconds % 10 == 0)) {
+                    auto const feet = owner->getFeetPos();
+                    TS_DBG(
+                        "[watchdog] task=#{} owner={} dim={} pos=({:.1f},{:.1f},{:.1f}) land=#{} inside={} off={}s",
+                        task.id,
+                        task.ownerName,
+                        static_cast<int>(owner->getDimensionId()),
+                        feet.x,
+                        feet.y,
+                        feet.z,
+                        task.plan.landId,
+                        inside,
+                        task.offLandSeconds
+                    );
+                }
+
+                if (!inside && task.offLandSeconds >= std::max(1, cfg.playerLeavePauseSeconds)) {
                     pauseTask(task.id, "领主离开领地超过 " + std::to_string(cfg.playerLeavePauseSeconds) + " 秒");
                     task.leavePaused = true;
                     continue;
                 }
             }
+        } else {
+            task.offLandSeconds = 0;
+            task.ownerInLand    = true;
         }
 
-        // 因离开而暂停的任务：领主回来后可自动续跑
-        if (task.state == TaskState::Paused && task.leavePaused && cfg.autoResumeOnReturn && owner) {
+        // 只有"因离开/离线而暂停"的任务才会自动续跑；手动暂停的 leavePaused 恒为 false
+        if (!running && task.leavePaused && cfg.autoResumeOnReturn && owner) {
             if (evaluateLeaveState(task, *owner) == LeaveState::Inside) {
                 resumeTask(task.id);
                 log::get().info("领主 {} 回到领地，任务 #{} 自动继续", task.ownerName, task.id);
@@ -1122,7 +1129,6 @@ LeaveState evaluateLeaveState(SweepTask& task, Player const& owner) {
             task.plan.landMinZ,
             task.plan.landMaxZ
         );
-        TS_DBG("[watchdog] 任务 #{} 判定 src=aabb inside={}", task.id, inside);
         return inside ? LeaveState::Inside : LeaveState::Outside;
     }
 
