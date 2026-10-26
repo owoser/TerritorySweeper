@@ -1,0 +1,16 @@
+# XMake
+/.xmake/
+/build/
+/bin/
+/CMakeLists.txt
+
+# IDE
+/.idea/
+/.vscode/
+
+# Build droppings
+*.obj
+*.pdb
+*.ilk
+*.log
+*.tmp

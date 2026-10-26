@@ -1,0 +1,17 @@
+{
+    "name": "${pluginName}",
+    "entry": "${modFile}",
+    "version": "${modVersion}",
+    "type": "native",
+    "dependencies": [
+        {
+            "name": "PLand"
+        },
+        {
+            "name": "DebugShape"
+        },
+        {
+            "name": "LegacyMoney"
+        }
+    ]
+}
