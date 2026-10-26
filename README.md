@@ -239,10 +239,10 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 标题形如：
 
 ```
-§e[领地清扫] §f第 14/131 层 §7| §b分块 3/49 §7| 分块间隔 §c2s §7| §a进度 9%
+§e[领地清扫] §f第 14/131 层 §7| §b分块 3/49 §7| 分块间隔 §c2s §7| §a进度 9％
 ```
 
-- **阶段自适应**：清理中显示"清理中"、分块间隔显示"分块间隔 Ns"、层间显示"层倒计时 Ns"；
+- **阶段自适应**：清理中显示"清理中"、分块间隔显示"分块间隔 Ns"、层间显示"层倒计时 Ns"、暂停时显示"释放倒计时 Ns"；
 - **分块段**只在分块任务（`chunksPerLayer() > 1`）出现，序号随进度递增；
 - **进度条**分母随阶段切换（分块间隔用 `chunk_interval_seconds`，层倒计时用 `layer_countdown_seconds`，清理中满条）；
 - **颜色**按剩余比例：>50% 绿、>25% 黄、其余红。
@@ -250,40 +250,65 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 > ⚠️ 客户端会**吞掉 ASCII 百分号 `%`**（BossBar、表单、聊天均是），转义成 `%%` 也无效。
 > 所有玩家可见文本统一走 `percentText()`，输出全角 `％`（U+FF05）；控制台日志仍用 ASCII `%`。
 
-## 10. 空区域跳过
+## 11. 空区域跳过
 
 `skip_empty_chunks` / `skip_empty_layers`（默认都开）会在推进过程中做空检测：
 
-- 分块内整层都是空气/基岩 → 直接跳过，**不消耗分块间隔**；
+- 分块内整层都是空气或"受保护方块" → 直接跳过，**不消耗分块间隔**；
 - 整层都没有可清理方块 → **不消耗每层倒计时**，直接进入下一层；
-- 扫描量由 `empty_scan_budget`（默认 8192 方块读取/tick）限制，超预算就留到下一 tick，避免卡顿峰值。
+- 扫描量由 `empty_scan_budget`（默认 8192 方块读取/tick）限制，超预算留到下一 tick，避免卡顿峰值。
 
 跳过只影响时间消耗，不改变清理结果；跳过的层仍计入进度，退款比例不受影响。
 
-## 11. 看门狗判定规则
+**前提**：只有**已完全加载**的区块才参与空判定（`areChunksFullyLoaded`）。
+未加载区块的 `getBlock()` 会返回空气，若不设防会把整片区域误判成"已清空"，
+导致进度瞬间跑满、退款算成 0。
 
-`pause_on_player_leave` 打开时，每秒对每个运行中任务执行一次判定（`evaluateLeaveState`）：
+## 12. 区块加载与基岩策略
+
+**离开判定按水平范围**：`leave_check_ignore_y`（默认 `true`）让"是否在领地内"只看 X/Z，
+玩家站到高空（例如 y=456）或掉进深层不会被误判成离开领地。设为 `false` 恢复三维判定。
+
+**主动加载目标区块**：
+
+- `force_load_chunks`（默认 `true`）：清理前通过 `ChunkSource::getOrLoadChunk` 主动加载目标区块，
+  玩家走远或掉线时任务仍能继续；
+- `chunk_load_budget`（默认 `4`）：每秒最多加载的区块数，防止同步 IO 造成卡顿尖峰；
+- 关闭后只能清理已加载区域，未加载的分块原地等待并每 10 秒告警一次。
+
+**基岩策略**：
+
+- `clear_bedrock`（默认 `true`）：清扫会连基岩一起清；
+- `preserve_bottom_layers`（默认 `1`）：保留世界最底部的 N 层基岩（掉下去会进虚空的那层）。
+
+因此默认行为是"一路清到 `-64`，只留最底层那层基岩"。想完全不动基岩，
+把 `clear_bedrock` 设为 `false`（此时基岩层会被判为空层而快速跳过）。
+
+## 13. 看门狗判定规则
+
+`pause_on_player_leave` 打开时，每秒对每个**运行中**任务执行一次判定（`evaluateLeaveState`）：
 
 1. 领主维度与任务不同 → **离开**；
-2. 优先用任务里**固化的领地 AABB**（创建任务时写入，schema v2 持久化）做包含判定；
-2. 用 `LandRegistry::getLand(landId)` 取任务所属领地的 **AABB**（不是清扫选区），
-   水平带 `leave_check_tolerance` 容差、垂直带少量上下容差做包含判定；
-3. AABB 判定为外时，再用 `getLandAt(脚下坐标)` 复核，id 相同即视为**在内**（覆盖子领地与边界误差）；
+2. 任务里固化的**领地 AABB**（创建时写入，schema v2 持久化）做范围判定；
+   默认只比 X/Z（`leave_check_ignore_y`），水平带 `leave_check_tolerance` 容差；
+3. 若任务还没有 AABB，依次用 `getLand(landId)`、`getLandAt(选区中心)` 反查并回填；
 4. 领地已删除 / PLand 不可用 → **无法判定**，按"在内"处理，绝不误暂停。
 
 领主实体连续 2 秒找不到才视为离线（去抖）。判定为离开后累计到 `player_leave_pause_seconds` 才暂停，
-并标记为"因离开暂停"；领主回到领地且 `auto_resume_on_return` 为真时自动续跑。手动暂停的任务不受影响。
+并标记为"因离开暂停"；领主回到领地且 `auto_resume_on_return` 为真时自动续跑。
+**手动暂停的任务回到领地不会自动续跑。**
+暂停中的任务不参与离开判定，释放倒计时会持续走到 0。
 
-`debug: true` 时每秒输出一行：
+`debug: true` 时仅在状态变化或每 10 秒输出一行：
 
 ```
 [watchdog] task=#1 owner=Allen13in dim=0 pos=(79.0,71.0,214.0) land=#12 inside=true off=0s
 ```
 
-## 10. BossBar 发包顺序（重要）
+## 14. BossBar 发包顺序（重要）
 
 Bedrock 的 BossBar 是**挂在实体上的**，不是"无名进度条"。因此每次刷新必须按
-LSE `PlayerClass::setBossBar`（也就是 YEssential/Fcam 用的那个 API）的顺序三连发：
+LSE `PlayerClass::setBossBar`（YEssential/Fcam 用的那个 API）的顺序三连发：
 
 1. `BossEvent(Remove)` —— 清掉同 id 的旧条
 2. `AddActorPacket` —— 造一个看不见的 `player` 假实体（位置在维度最低高度 -64），
@@ -303,8 +328,7 @@ LSE `PlayerClass::setBossBar`（也就是 YEssential/Fcam 用的那个 API）的
 - 两个包都通过 `MinecraftPackets::createPacket(MinecraftPacketIds::…)` 创建：
   包头里的 `mSerializationMode` 由 BDS 构造函数初始化，栈上默认构造会留下未定义值，
   写出来的包可能不合规（曾导致客户端 `ClientDisconnection`）。
-- 字段直接通过文档公开的成员访问（`mBossID / mEventType / mName / mHealthPercent / mColor / mOverlay`），
-  不再手动 `static_cast` 到 payload 结构。
+- 字段直接通过文档公开的成员访问，不再手动 `static_cast` 到 payload 结构。
 - 创建后校验 `pkt->getId()` 与期望一致，避免类型不符时强转。
 
 **刷新策略**：`bossbar_update_mode`
@@ -317,9 +341,10 @@ LSE `PlayerClass::setBossBar`（也就是 YEssential/Fcam 用的那个 API）的
 **排查开关**：`bossbar_enabled` / `region_frame_enabled`，任一关闭即可隔离显示层；
 `debug: true` 打开后会输出每个 `[bossbar]` 发包与 `[task]` 推进日志。
 
-## 11. 已知取舍
+## 15. 已知取舍
 
-1. **长加载**：未使用 BDS TickingArea（其 _addArea 需要 LevelStorage，且会与玩家自建区域混淆），
-   改为在清扫过程中按区块触达保持区块已加载状态，避免玩家离开导致区块卸载。
+1. **长加载**：不使用 BDS TickingArea（其 `_addArea` 需要 LevelStorage，且会与玩家自建区域混淆），
+   改为清理时按 `chunk_load_budget` 主动加载目标区块，玩家离开也不会中断。
 2. **自动层数扫描**：选区较大时逐列扫描成本较高，扫描在表单提交时一次性执行；
    极端大选区建议手动输入层数。
+3. **基岩清理不可逆**：`clear_bedrock` 为真时会真的挖掉基岩（最底层受 `preserve_bottom_layers` 保护）。
