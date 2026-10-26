@@ -224,34 +224,69 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
         fs::create_directories(configDir, ec);
     }
 
-    mPath = configDir / "config.json";
-    mPath.make_preferred();
-
     auto defaultConfig = Config::makeDefault();
 
-    if (!fs::exists(mPath, ec)) {
-        // 首次运行：按默认值渲染带注释的配置文件
-        std::ofstream out(mPath, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            log::get().error("无法写入默认配置文件: {}", mPath.string());
-            mConfig = defaultConfig;
-            return true;
-        }
-        out << renderConfig(defaultConfig);
-        out.close();
+    auto jsoncPath = configDir / "config.jsonc";
+    auto jsonPath  = configDir / "config.json";
+    jsoncPath.make_preferred();
+    jsonPath.make_preferred();
 
+    bool const hasJsonc = fs::exists(jsoncPath, ec);
+    bool const hasJson  = fs::exists(jsonPath, ec);
+
+    auto writeText = [](fs::path const& file, std::string const& content) {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            return false;
+        }
+        out << content;
+        out.close();
+        return true;
+    };
+
+    auto readText = [](fs::path const& file, std::string& out) {
+        std::ifstream in(file, std::ios::binary);
+        if (!in) {
+            return false;
+        }
+        out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return true;
+    };
+
+    auto timestamp = [] {
+        auto    now = std::time(nullptr);
+        std::tm tmBuf{};
+        localtime_s(&tmBuf, &now);
+        char buf[32]{};
+        std::strftime(buf, sizeof(buf), "%Y%m%d-%H%M%S", &tmBuf);
+        return std::string{buf};
+    };
+
+    // 两个文件都不存在 -> 全新安装，直接生成 config.jsonc
+    if (!hasJsonc && !hasJson) {
+        mPath = jsoncPath;
+        if (writeText(mPath, renderConfig(defaultConfig))) {
+            log::get().info("已生成默认配置文件: {}", mPath.string());
+        } else {
+            log::get().error("无法写入默认配置文件: {}", mPath.string());
+        }
         mConfig = defaultConfig;
-        log::get().info("已生成默认配置文件: {}", mPath.string());
         return true;
     }
 
-    std::ifstream in(mPath, std::ios::binary);
-    if (!in) {
+    if (hasJsonc && hasJson) {
+        log::get().warn("同时存在 config.jsonc 与 config.json，只会读取 config.jsonc；config.json 已忽略，可手动删除。");
+    }
+
+    // 读取来源：优先 config.jsonc，其次旧版的 config.json
+    bool const fromLegacyJson = !hasJsonc && hasJson;
+    mPath                     = fromLegacyJson ? jsonPath : jsoncPath;
+
+    std::string text;
+    if (!readText(mPath, text)) {
         log::get().error("无法读取配置文件: {}", mPath.string());
         return false;
     }
-
-    std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 
     // 允许 // 与 /* */ 注释（JSONC）；注释剥离在词法层完成，字符串内的 // 不会被误判
     nlohmann::json root = nlohmann::json::parse(text, nullptr, false, true);
@@ -301,43 +336,53 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
         log::get().warn("配置修正: {}", note);
     }
 
-    // 旧版本把注释写成 "// xxx": value 这样的伪装键；检测到该格式时迁移为新版 JSONC 排版
-    bool legacyCommentStyle = false;
+    // 旧版本用过 "// 说明": 值 的伪装键当注释；检测到就重排成新版 JSONC
+    bool legacyPseudoKeys = false;
     if (root.is_object()) {
         for (auto it = root.begin(); it != root.end(); ++it) {
             if (it.key().rfind("//", 0) == 0) {
-                legacyCommentStyle = true;
+                legacyPseudoKeys = true;
                 break;
             }
         }
     }
 
-    if (legacyCommentStyle) {
-        auto stamp = [] {
-            auto    now = std::time(nullptr);
-            std::tm tmBuf{};
-            localtime_s(&tmBuf, &now);
-            char buf[32]{};
-            std::strftime(buf, sizeof(buf), "%Y%m%d-%H%M%S", &tmBuf);
-            return std::string{buf};
-        }();
-
+    if (fromLegacyJson && !legacyPseudoKeys) {
+        // 内容已经是新版 JSONC：直接改后缀，完整保留用户手写的注释与排版
+        std::error_code renameEc;
+        fs::rename(jsonPath, jsoncPath, renameEc);
+        if (!renameEc) {
+            mPath = jsoncPath;
+            log::get().info("配置文件已更名为 config.jsonc（内容未改动）");
+        } else if (writeText(jsoncPath, renderConfig(cfg))) {
+            mPath = jsoncPath;
+            log::get().warn("config.json 改名失败，已另写出 config.jsonc；config.json 可手动删除。");
+        } else {
+            log::get().warn("无法生成 config.jsonc，继续使用 config.json 中的配置。");
+        }
+    } else if (legacyPseudoKeys) {
+        auto stamp  = timestamp();
         auto backup = mPath;
         backup += ".bak-" + stamp;
 
-        std::error_code copyEc;
-        std::filesystem::copy_file(mPath, backup, std::filesystem::copy_options::overwrite_existing, copyEc);
+        // 先把原文件改名成带时间戳的备份（失败则退化为拷贝），避免新旧文件并存造成困惑
+        std::error_code renameEc;
+        fs::rename(mPath, backup, renameEc);
+        if (renameEc) {
+            std::error_code copyEc;
+            fs::copy_file(mPath, backup, fs::copy_options::overwrite_existing, copyEc);
+        }
 
-        std::ofstream out(mPath, std::ios::binary | std::ios::trunc);
-        if (!copyEc && out) {
-            out << renderConfig(cfg);
-            out.close();
+        if (writeText(jsoncPath, renderConfig(cfg))) {
+            mPath = jsoncPath;
             log::get().info(
-                "检测到旧版注释键格式，已自动迁移为新版 JSONC 注释（原文件备份为 {}）",
+                "配置已迁移为 {}（原文件备份为 {}）",
+                jsoncPath.filename().string(),
                 backup.filename().string()
             );
         } else {
-            log::get().warn("旧版配置迁移失败（备份或写入出错），继续使用已解析的配置，原文件保持不变。");
+            mPath = jsoncPath;
+            log::get().warn("配置迁移写入失败，继续使用已解析的配置，请检查目录写权限。");
         }
     }
 
