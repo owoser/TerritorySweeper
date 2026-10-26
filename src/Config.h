@@ -31,6 +31,12 @@ struct Config {
     int globalTaskLimit{3};
     int playerTaskLimit{1};
 
+    // ---- 显示 ----
+    /// BossBar 进度条（BossEventPacket）。定位进服异常时先关掉它。
+    bool bossBarEnabled{false};
+    /// DebugShape 选区 / 任务区域线框
+    bool regionFrameEnabled{true};
+
     // ---- 清理节奏 ----
     int layerCountdownSeconds{10};
 

@@ -1,5 +1,6 @@
 #include "Selection.h"
 
+#include "Config.h"
 #include "Global.h"
 #include "Visual.h"
 
@@ -87,12 +88,14 @@ void SelectionManager::begin(Player& player, PlayerLand const& land) {
     state.landId = land.land.id;
     mStates[keyOf(player)] = state;
 
-    visual::RegionRenderer::drawBox(
-        player,
-        "land-frame",
-        landBox(land.land.aabb),
-        mce::Color{255, 215, 0, 200} // 金色：领地边界
-    );
+    if (ConfigManager::getInstance().get().regionFrameEnabled) {
+        visual::RegionRenderer::drawBox(
+            player,
+            "land-frame",
+            landBox(land.land.aabb),
+            mce::Color{255, 215, 0, 200} // 金色：领地边界
+        );
+    }
 }
 
 void SelectionManager::cancel(Player& player) {
@@ -148,6 +151,9 @@ bool SelectionManager::setPoint(Player& player, int which, BlockPos const& pos) 
 
 void SelectionManager::refreshBox(Player& player, SelectionState const& state) {
     if (!state.hasPos1 && !state.hasPos2) {
+        return;
+    }
+    if (!ConfigManager::getInstance().get().regionFrameEnabled) {
         return;
     }
 

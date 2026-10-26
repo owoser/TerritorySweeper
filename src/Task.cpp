@@ -477,6 +477,44 @@ void TaskManager::killTask(uint64_t id, std::string const& reason) {
 }
 
 void TaskManager::updateBossBar(SweepTask& task, Player& player) {
+    auto const& cfg = ConfigManager::getInstance().get();
+
+    // 任何表现层调用都不允许异常逃逸到 LL3 的事件分发里
+    try {
+        if (!cfg.bossBarEnabled && !cfg.regionFrameEnabled) {
+            task.bossShown = true; // 已关闭显示，避免每轮重复进入
+            return;
+        }
+
+        if (!cfg.bossBarEnabled) {
+            if (!task.bossShown) {
+                if (cfg.regionFrameEnabled) {
+                    visual::RegionRenderer::drawBox(
+                        player,
+                        "task-frame",
+                        AABB{
+                            Vec3{(float)task.plan.minX, (float)task.plan.minY, (float)task.plan.minZ},
+                            Vec3{(float)task.plan.maxX + 1.0f, (float)task.plan.maxY + 1.0f, (float)task.plan.maxZ + 1.0f}
+                        },
+                        mce::Color{80, 220, 255, 180}
+                    );
+                }
+                task.bossShown = true;
+            }
+            return;
+        }
+
+        updateBossBarImpl(task, player);
+    } catch (std::exception const& e) {
+        log::get().error("刷新任务 #{} 显示时异常: {}（已停止显示该任务）", task.id, e.what());
+        task.bossShown = true;
+    } catch (...) {
+        log::get().error("刷新任务 #{} 显示时发生未知异常（已停止显示该任务）", task.id);
+        task.bossShown = true;
+    }
+}
+
+void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
     int64_t bossId = visual::BossBar::idFor("task-" + std::to_string(task.id));
 
     int total  = task.plan.layerCount;
@@ -500,15 +538,17 @@ void TaskManager::updateBossBar(SweepTask& task, Player& player) {
     if (!task.bossShown) {
         visual::BossBar::show(player, bossId, title, ratio, color);
         // 任务运行/恢复时重新显示任务区域边框（清理期间常驻）
-        visual::RegionRenderer::drawBox(
-            player,
-            "task-frame",
-            AABB{
-                Vec3{(float)task.plan.minX, (float)task.plan.minY, (float)task.plan.minZ},
-                Vec3{(float)task.plan.maxX + 1.0f, (float)task.plan.maxY + 1.0f, (float)task.plan.maxZ + 1.0f}
-            },
-            mce::Color{80, 220, 255, 180}
-        );
+        if (ConfigManager::getInstance().get().regionFrameEnabled) {
+            visual::RegionRenderer::drawBox(
+                player,
+                "task-frame",
+                AABB{
+                    Vec3{(float)task.plan.minX, (float)task.plan.minY, (float)task.plan.minZ},
+                    Vec3{(float)task.plan.maxX + 1.0f, (float)task.plan.maxY + 1.0f, (float)task.plan.maxZ + 1.0f}
+                },
+                mce::Color{80, 220, 255, 180}
+            );
+        }
         task.bossShown = true;
     } else {
         visual::BossBar::update(player, bossId, title, ratio, color);
@@ -706,8 +746,11 @@ void TaskManager::tick() {
 // ---------------------------------------------------------------------------
 
 void TaskManager::onPlayerJoin(Player& player) {
+    // 进服瞬间客户端还在接收区块数据，此时直接发送 BossBar 包可能被丢弃甚至导致断连。
+    // 这里只重置显示状态，真正发包交给下一轮 tick（玩家已完全进入世界）。
     if (auto* task = taskOfPlayer(player.getUuid()); task) {
-        updateBossBar(*task, player);
+        task->bossShown = false;
+        (void)player;
     }
 }
 

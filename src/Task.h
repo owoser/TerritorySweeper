@@ -164,6 +164,7 @@ private:
     void            stepTask(SweepTask& task);
     void            clearUnit(SweepTask& task);
     void            updateBossBar(SweepTask& task, Player& player);
+    void            updateBossBarImpl(SweepTask& task, Player& player);
     void            loadState();
     /// 按未完成比例退款，返回实际到账金额（0 表示无需退款或退款失败）
     int64_t         refundTask(SweepTask& task, std::string const& reason);

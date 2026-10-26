@@ -68,6 +68,13 @@ std::string renderConfig(Config const& cfg) {
     appendComment(out, {"单个玩家同时存在的清理任务数量上限"});
     appendField(out, "player_task_limit", std::to_string(cfg.playerTaskLimit));
 
+    appendComment(out, {"是否显示 BossBar 进度条（每层倒计时与整体进度）",
+                        "若进服出现异常断开，可先关闭此项排查"});
+    appendField(out, "bossbar_enabled", cfg.bossBarEnabled ? "true" : "false");
+
+    appendComment(out, {"是否显示选区与任务区域的调试线框（依赖 DebugShape）"});
+    appendField(out, "region_frame_enabled", cfg.regionFrameEnabled ? "true" : "false");
+
     appendComment(out, {"每层开始清理前的倒计时秒数"});
     appendField(out, "layer_countdown_seconds", std::to_string(cfg.layerCountdownSeconds));
 
@@ -304,6 +311,8 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "moneyname", cfg.moneyname);
     readIfPresent(root, "global_task_limit", cfg.globalTaskLimit);
     readIfPresent(root, "player_task_limit", cfg.playerTaskLimit);
+    readIfPresent(root, "bossbar_enabled", cfg.bossBarEnabled);
+    readIfPresent(root, "region_frame_enabled", cfg.regionFrameEnabled);
     readIfPresent(root, "layer_countdown_seconds", cfg.layerCountdownSeconds);
     readIfPresent(root, "chunked_clean_enabled", cfg.chunkedCleanEnabled);
     readIfPresent(root, "chunk_matrix_width", cfg.chunkMatrixWidth);
