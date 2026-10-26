@@ -108,6 +108,7 @@ struct SweepTask {
     bool    bossShown{false};
     bool    leavePaused{false};     ///< 是否因"离开领地/离线"而暂停（用于自动续跑）
     bool    layerHadWork{true};     ///< 当前层是否真的清过方块（空层不消耗倒计时）
+    int     waitLoadedTicks{0};     ///< 当前分块等待区块加载的秒数（仅用于告警）
     int64_t paidAmount{0};
 
     [[nodiscard]] int  chunksPerLayer() const;
@@ -151,6 +152,7 @@ bool isRegionLoaded(BlockSource& source, BlockPos const& min, BlockPos const& ma
 /// 该分块在指定层是否没有任何需要清理的方块（空气与基岩都算"无需处理"）
 bool isChunkEmptyAtLayer(
     BlockSource& source,
+    int          dimId,
     int          y,
     int          x0,
     int          x1,
@@ -237,6 +239,8 @@ private:
 
     void            stepTask(SweepTask& task);
     void            advanceEmptyUnits(SweepTask& task);
+    /// 按每秒预算主动加载该水平范围覆盖的区块
+    void            loadChunksForRange(BlockSource& source, int x0, int x1, int z0, int z1);
     /// 把离线期间暂存的退款发放给该玩家
     void            deliverPendingPayouts(Player& player);
     void            clearUnit(SweepTask& task);
@@ -247,6 +251,7 @@ private:
     int64_t         refundTask(SweepTask& task, std::string const& reason);
     [[nodiscard]] Player* findOwner(SweepTask const& task) const;
 
+    int                      mChunkLoadBudget{0}; ///< 本 tick 剩余的区块加载额度
     std::vector<SweepTask>   mTasks;
     std::vector<PendingBill> mBills;
     uint64_t                 mNextId{1};

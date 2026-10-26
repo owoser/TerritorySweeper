@@ -12,6 +12,8 @@
 
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/level/BlockSource.h"
+#include "mc/world/level/ChunkPos.h"
+#include "mc/world/level/chunk/ChunkSource.h"
 #include "mc/world/level/block/BlockChangeContext.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/block/Block.h"
@@ -36,6 +38,24 @@ Block const* airBlockPtr() {
     return ptr;
 }
 constexpr char const* kBedrock = "minecraft:bedrock";
+
+/// 世界最低高度（0 = 主世界，1 = 下界，2 = 末地）
+constexpr int worldMinYForDim(int dimId) { return (dimId == 1 || dimId == 2) ? 0 : -64; }
+
+/// 该方块是否"保留不动"：既不清除，也不计入可清理工作量
+bool isProtectedBlock(Block const& block, int y, int dimId) {
+    if (block.getTypeName() != kBedrock) {
+        return false;
+    }
+
+    auto const& cfg = ConfigManager::getInstance().get();
+    if (!cfg.clearBedrock) {
+        return true; // 完全不清理基岩
+    }
+
+    int const keep = std::max(0, cfg.preserveBottomLayers);
+    return keep > 0 && y < worldMinYForDim(dimId) + keep;
+}
 
 BlockSource* blockSourceFor(int dimId) {
     auto level = ll::service::getLevel();
@@ -594,6 +614,30 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
 // 执行
 // ---------------------------------------------------------------------------
 
+void TaskManager::loadChunksForRange(BlockSource& source, int x0, int x1, int z0, int z1) {
+    auto const& cfg = ConfigManager::getInstance().get();
+    if (!cfg.forceLoadChunks) {
+        return;
+    }
+
+    ChunkSource& chunks = source.getChunkSource();
+
+    for (int cx = x0 >> 4; cx <= (x1 >> 4); ++cx) {
+        for (int cz = z0 >> 4; cz <= (z1 >> 4); ++cz) {
+            if (mChunkLoadBudget <= 0) {
+                return; // 本 tick 预算用尽，下一 tick 继续
+            }
+            --mChunkLoadBudget;
+
+            try {
+                chunks.getOrLoadChunk(ChunkPos{cx, cz}, ChunkSource::LoadMode::Deferred, false);
+            } catch (...) {
+                log::get().warn("加载区块 ({}, {}) 时发生异常，已跳过。", cx, cz);
+            }
+        }
+    }
+}
+
 void TaskManager::clearUnit(SweepTask& task) {
     BlockSource* source = blockSourceFor(task.plan.dimId);
     if (!source) {
@@ -627,10 +671,29 @@ void TaskManager::clearUnit(SweepTask& task) {
     }
     Block const& air = *airPtr;
 
-    // 区块未加载时不能推进：否则整块会被"读成空气"而误判为已清理
-    if (!isRegionLoaded(*source, BlockPos{x0, y, z0}, BlockPos{x1, y, z1})) {
-        return;
+    BlockPos const minPos{x0, y, z0};
+    BlockPos const maxPos{x1, y, z1};
+
+    // 区块未加载时主动加载（受每秒预算限制），加载不出来就等下一 tick
+    if (!isRegionLoaded(*source, minPos, maxPos)) {
+        loadChunksForRange(*source, x0, x1, z0, z1);
+
+        // 仍未就绪：不能推进，否则整块会被"读成空气"而误判为已清理
+        if (!isRegionLoaded(*source, minPos, maxPos)) {
+            if (++task.waitLoadedTicks % 10 == 1) {
+                log::get().warn(
+                    "任务 #{} 等待区块加载中（x {}-{}, z {}-{}），若长期无进展请检查 force_load_chunks 设置。",
+                    task.id,
+                    x0,
+                    x1,
+                    z0,
+                    z1
+                );
+            }
+            return;
+        }
     }
+    task.waitLoadedTicks = 0;
 
     task.layerHadWork = true;
 
@@ -647,7 +710,8 @@ void TaskManager::clearUnit(SweepTask& task) {
             }
             BlockPos pos{x, y, z};
             auto const& block = source->getBlock(pos);
-            if (!block.isAir() && block.getTypeName() != kBedrock) {
+            // 空气与被保护的方块（默认是最底层基岩）保持不动
+            if (!block.isAir() && !isProtectedBlock(block, y, task.plan.dimId)) {
                 source->setBlock(pos, air, 3, nullptr, changeContext);
             }
 
@@ -736,7 +800,8 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
         int const z1 = std::min(z0 + cd - 1, task.plan.maxZ);
         int const y  = task.plan.layerY(task.layersDone);
 
-        if (!cfg.skipEmptyChunks || !isChunkEmptyAtLayer(*source, y, x0, x1, z0, z1, budget)) {
+        if (!cfg.skipEmptyChunks
+            || !isChunkEmptyAtLayer(*source, task.plan.dimId, y, x0, x1, z0, z1, budget)) {
             break; // 有活干：停下来交给 clearUnit
         }
 
@@ -824,6 +889,9 @@ void TaskManager::stepTask(SweepTask& task) {
 
 void TaskManager::tick() {
     auto const& cfg = ConfigManager::getInstance().get();
+
+    // 每秒重置区块加载预算
+    mChunkLoadBudget = std::max(0, cfg.chunkLoadBudget);
 
     std::vector<uint64_t> toKill;
 
@@ -1076,6 +1144,7 @@ bool isRegionLoaded(BlockSource& source, BlockPos const& min, BlockPos const& ma
 
 bool isChunkEmptyAtLayer(
     BlockSource& source,
+    int          dimId,
     int          y,
     int          x0,
     int          x1,
@@ -1096,7 +1165,9 @@ bool isChunkEmptyAtLayer(
             --budget;
 
             auto const& block = source.getBlock(BlockPos{x, y, z});
-            if (!block.isAir() && block.getTypeName() != kBedrock) {
+            // 被保护的方块（如最底层基岩）视作"无需处理"；
+            // 未受保护的基岩在 clear_bedrock 开启时属于需要清理的对象
+            if (!block.isAir() && !isProtectedBlock(block, y, dimId)) {
                 return false;
             }
         }
@@ -1140,9 +1211,19 @@ LeaveState evaluateLeaveState(SweepTask& task, Player const& owner) {
     int const   tol  = std::max(0, cfg.leaveCheckTolerance);
     Vec3 const  feet = owner.getFeetPos();
 
+    // 默认按水平范围判定：领地内的"高空 / 地下深处"不应被判成离开
+    bool const ignoreY = cfg.leaveCheckIgnoreY;
+
     auto insideBox = [&](int minX, int maxX, int minY, int maxY, int minZ, int maxZ) {
-        return feet.x >= (float)(minX - tol) && feet.x <= (float)(maxX + 1 + tol) && feet.z >= (float)(minZ - tol)
-            && feet.z <= (float)(maxZ + 1 + tol) && feet.y >= (float)(minY - 4) && feet.y <= (float)(maxY + 8);
+        bool const insideXZ = feet.x >= (float)(minX - tol) && feet.x <= (float)(maxX + 1 + tol)
+                           && feet.z >= (float)(minZ - tol) && feet.z <= (float)(maxZ + 1 + tol);
+        if (!insideXZ) {
+            return false;
+        }
+        if (ignoreY) {
+            return true;
+        }
+        return feet.y >= (float)(minY - 4) && feet.y <= (float)(maxY + 8);
     };
 
     // 1) 任务已存领地 AABB：直接判定，不再依赖 LandID

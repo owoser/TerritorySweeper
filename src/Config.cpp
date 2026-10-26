@@ -190,6 +190,29 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
         {"每 tick 用于空区域扫描的方块读取预算，越大跳得越快、但峰值开销越高"}
     );
 
+    field(
+        "leave_check_ignore_y",
+        cfg.leaveCheckIgnoreY ? "true" : "false",
+        {"离开领地判定是否忽略 Y（true 时只按水平范围判断，站到高空不算离开）"}
+    );
+
+    field(
+        "force_load_chunks",
+        cfg.forceLoadChunks ? "true" : "false",
+        {"清理时是否主动加载未加载的目标区块",
+         "关闭后只能清理已加载区域，玩家远离时会卡住"}
+    );
+
+    field("chunk_load_budget", std::to_string(cfg.chunkLoadBudget), {"每秒最多主动加载多少个区块，过大可能造成卡顿"});
+
+    field("clear_bedrock", cfg.clearBedrock ? "true" : "false", {"是否连基岩一起清理（不可逆：会挖掉选区内的基岩）"});
+
+    field(
+        "preserve_bottom_layers",
+        std::to_string(cfg.preserveBottomLayers),
+        {"保留世界最底部的 N 层基岩（掉下去会进虚空的那层）"}
+    );
+
     {
         std::string block;
         appendComment(
@@ -494,6 +517,11 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "skip_empty_chunks", cfg.skipEmptyChunks);
     readIfPresent(root, "skip_empty_layers", cfg.skipEmptyLayers);
     readIfPresent(root, "empty_scan_budget", cfg.emptyScanBudget);
+    readIfPresent(root, "leave_check_ignore_y", cfg.leaveCheckIgnoreY);
+    readIfPresent(root, "force_load_chunks", cfg.forceLoadChunks);
+    readIfPresent(root, "chunk_load_budget", cfg.chunkLoadBudget);
+    readIfPresent(root, "clear_bedrock", cfg.clearBedrock);
+    readIfPresent(root, "preserve_bottom_layers", cfg.preserveBottomLayers);
     readIfPresent(root, "pause_auto_cancel_seconds", cfg.pauseAutoCancelSeconds);
 
     if (root.contains("price_levels") && root["price_levels"].is_array() && !root["price_levels"].empty()) {

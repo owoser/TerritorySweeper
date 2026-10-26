@@ -70,6 +70,17 @@ struct Config {
     int  emptyScanBudget{8192};
     int  pauseAutoCancelSeconds{300};
 
+    /// 离开领地判定是否忽略 Y（true 时只看水平范围）
+    bool leaveCheckIgnoreY{true};
+    /// 清理时是否主动加载未加载的目标区块
+    bool forceLoadChunks{true};
+    /// 每秒最多主动加载多少个区块
+    int  chunkLoadBudget{4};
+    /// 是否连基岩一起清理
+    bool clearBedrock{true};
+    /// 保留世界最底部的 N 层基岩
+    int  preserveBottomLayers{1};
+
     // ---- 价格阶梯（按面积从小到大）----
     std::vector<PriceLevel> priceLevels;
 
