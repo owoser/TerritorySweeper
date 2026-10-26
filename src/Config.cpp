@@ -5,9 +5,12 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <ctime>
 #include <fstream>
 #include <iterator>
+#include <utility>
+#include <vector>
 
 namespace ts {
 
@@ -28,7 +31,6 @@ void appendField(std::string& out, std::string const& key, std::string const& va
     out += key;
     out += "\": ";
     out += value;
-    out += ",\n\n\n";
 }
 
 template <class T>
@@ -44,110 +46,237 @@ void readIfPresent(nlohmann::json const& j, char const* key, T& out) {
 
 } // namespace
 
-std::string renderConfig(Config const& cfg) {
-    std::string out;
-    out += "{\n";
+/// 生成所有字段块（注释行 + 键值行，不含尾随逗号与多余空行）
+std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& cfg) {
+    std::vector<std::pair<std::string, std::string>> blocks;
+    blocks.reserve(24);
 
-    appendComment(out, {"配置文件版本号，请勿手动修改"});
-    appendField(out, "config_version", std::to_string(cfg.configVersion));
+    auto field = [&blocks](
+                     char const*                       key,
+                     std::string const&                value,
+                     std::initializer_list<char const*> comments
+                 ) {
+        std::string block;
+        appendComment(block, comments);
+        appendField(block, key, value);
+        blocks.emplace_back(key, std::move(block));
+    };
 
-    appendComment(out, {"调试模式：开启后输出发包 / 任务推进 / 交互等详细日志",
-                        "仅在排查问题时开启，会产生大量控制台输出"});
-    appendField(out, "debug", cfg.debugEnabled ? "true" : "false");
+    field("config_version", std::to_string(cfg.configVersion), {"配置文件版本号，请勿手动修改"});
 
-    appendComment(out, {"经济系统后端",
-                        "可选值：LLMoney（使用 LegacyMoney 插件）、Scoreboard（使用原版计分板）"});
-    appendField(out, "economy_type", jsonString(cfg.economyType));
+    field(
+        "debug",
+        cfg.debugEnabled ? "true" : "false",
+        {"调试模式：开启后输出发包 / 任务推进 / 交互等详细日志", "仅在排查问题时开启，会产生大量控制台输出"}
+    );
 
-    appendComment(out, {"计分板后端绑定的目标名称，仅当 economy_type 为 Scoreboard 时生效",
-                        "需提前用 /scoreboard objectives add <名称> dummy \"<显示名>\" 创建该目标"});
-    appendField(out, "scoreboard_objective", jsonString(cfg.scoreboardObjective));
+    field(
+        "economy_type",
+        jsonString(cfg.economyType),
+        {"经济系统后端", "可选值：LLMoney（使用 LegacyMoney 插件）、Scoreboard（使用原版计分板）"}
+    );
 
-    appendComment(out, {"界面文案中显示的货币名称，不影响实际结算"});
-    appendField(out, "moneyname", jsonString(cfg.moneyname));
+    field(
+        "scoreboard_objective",
+        jsonString(cfg.scoreboardObjective),
+        {"计分板后端绑定的目标名称，仅当 economy_type 为 Scoreboard 时生效",
+         "需提前用 /scoreboard objectives add <名称> dummy \"<显示名>\" 创建该目标"}
+    );
 
-    appendComment(out, {"全服同时存在的清理任务数量上限"});
-    appendField(out, "global_task_limit", std::to_string(cfg.globalTaskLimit));
+    field("moneyname", jsonString(cfg.moneyname), {"界面文案中显示的货币名称，不影响实际结算"});
 
-    appendComment(out, {"单个玩家同时存在的清理任务数量上限"});
-    appendField(out, "player_task_limit", std::to_string(cfg.playerTaskLimit));
+    field("global_task_limit", std::to_string(cfg.globalTaskLimit), {"全服同时存在的清理任务数量上限"});
 
-    appendComment(out, {"是否显示 BossBar 进度条（每层倒计时与整体进度）",
-                        "若进服出现异常断开，可先关闭此项排查"});
-    appendField(out, "bossbar_enabled", cfg.bossBarEnabled ? "true" : "false");
+    field(
+        "player_task_limit",
+        std::to_string(cfg.playerTaskLimit),
+        {"单个玩家同时存在的清理任务数量上限"}
+    );
 
-    appendComment(out, {"BossBar 刷新方式：incremental 只发送变化的字段（省流量）",
-                        "recreate 每秒完整重建（兼容性最好，出现显示异常时可切到它）"});
-    appendField(out, "bossbar_update_mode", jsonString(cfg.bossBarUpdateMode));
+    field(
+        "bossbar_enabled",
+        cfg.bossBarEnabled ? "true" : "false",
+        {"是否显示 BossBar 进度条（每层倒计时与整体进度）", "若进服出现异常断开，可先关闭此项排查"}
+    );
 
-    appendComment(out, {"是否显示选区与任务区域的调试线框（依赖 DebugShape）"});
-    appendField(out, "region_frame_enabled", cfg.regionFrameEnabled ? "true" : "false");
+    field(
+        "bossbar_update_mode",
+        jsonString(cfg.bossBarUpdateMode),
+        {"BossBar 刷新方式：incremental 只发送变化的字段（省流量）",
+         "recreate 每秒完整重建（兼容性最好，出现显示异常时可切到它）"}
+    );
 
-    appendComment(out, {"每层开始清理前的倒计时秒数"});
-    appendField(out, "layer_countdown_seconds", std::to_string(cfg.layerCountdownSeconds));
+    field(
+        "region_frame_enabled",
+        cfg.regionFrameEnabled ? "true" : "false",
+        {"是否显示选区与任务区域的调试线框（依赖 DebugShape）"}
+    );
 
-    appendComment(out, {"是否启用分块清理",
-                        "启用后大区域会被拆成若干小块分批处理，降低瞬时卡顿"});
-    appendField(out, "chunked_clean_enabled", cfg.chunkedCleanEnabled ? "true" : "false");
+    field(
+        "layer_countdown_seconds",
+        std::to_string(cfg.layerCountdownSeconds),
+        {"每层开始清理前的倒计时秒数"}
+    );
 
-    appendComment(out, {"分块矩阵：单个分块覆盖的 X 方向跨度（方块数）"});
-    appendField(out, "chunk_matrix_width", std::to_string(cfg.chunkMatrixWidth));
+    field(
+        "chunked_clean_enabled",
+        cfg.chunkedCleanEnabled ? "true" : "false",
+        {"是否启用分块清理", "启用后大区域会被拆成若干小块分批处理，降低瞬时卡顿"}
+    );
 
-    appendComment(out, {"分块矩阵：单个分块覆盖的 Z 方向跨度（方块数）"});
-    appendField(out, "chunk_matrix_depth", std::to_string(cfg.chunkMatrixDepth));
+    field("chunk_matrix_width", std::to_string(cfg.chunkMatrixWidth), {"分块矩阵：单个分块覆盖的 X 方向跨度（方块数）"});
+    field("chunk_matrix_depth", std::to_string(cfg.chunkMatrixDepth), {"分块矩阵：单个分块覆盖的 Z 方向跨度（方块数）"});
 
-    appendComment(out, {"选区水平面积（X 跨度 × Z 跨度）超过该值时才启用分块清理"});
-    appendField(out, "chunked_min_area", std::to_string(cfg.chunkedMinArea));
+    field(
+        "chunked_min_area",
+        std::to_string(cfg.chunkedMinArea),
+        {"选区水平面积（X 跨度 × Z 跨度）超过该值时才启用分块清理"}
+    );
 
-    appendComment(out, {"相邻两个分块之间的等待秒数"});
-    appendField(out, "chunk_interval_seconds", std::to_string(cfg.chunkIntervalSeconds));
+    field("chunk_interval_seconds", std::to_string(cfg.chunkIntervalSeconds), {"相邻两个分块之间的等待秒数"});
 
-    appendComment(out, {"领主离开领地范围时是否自动暂停任务"});
-    appendField(out, "pause_on_player_leave", cfg.pauseOnPlayerLeave ? "true" : "false");
+    field(
+        "pause_on_player_leave",
+        cfg.pauseOnPlayerLeave ? "true" : "false",
+        {"领主离开领地范围时是否自动暂停任务"}
+    );
 
-    appendComment(out, {"领主离开领地多少秒后触发暂停，仅在上一项开启时生效"});
-    appendField(out, "player_leave_pause_seconds", std::to_string(cfg.playerLeavePauseSeconds));
+    field(
+        "player_leave_pause_seconds",
+        std::to_string(cfg.playerLeavePauseSeconds),
+        {"领主离开领地多少秒后触发暂停，仅在上一项开启时生效"}
+    );
 
-    appendComment(out, {"领主回到领地后是否自动继续任务（只对因离开领地而暂停的任务生效）"});
-    appendField(out, "auto_resume_on_return", cfg.autoResumeOnReturn ? "true" : "false");
+    field(
+        "auto_resume_on_return",
+        cfg.autoResumeOnReturn ? "true" : "false",
+        {"领主回到领地后是否自动继续任务（只对因离开领地而暂停的任务生效）"}
+    );
 
-    appendComment(out, {"判定是否在领地内时允许的水平越界容差（格），用于消除边界抖动"});
-    appendField(out, "leave_check_tolerance", std::to_string(cfg.leaveCheckTolerance));
+    field(
+        "leave_check_tolerance",
+        std::to_string(cfg.leaveCheckTolerance),
+        {"判定是否在领地内时允许的水平越界容差（格），用于消除边界抖动"}
+    );
 
-    appendComment(out, {"任务暂停多少秒后自动终止并释放名额，手动暂停同样适用"});
-    appendField(out, "pause_auto_cancel_seconds", std::to_string(cfg.pauseAutoCancelSeconds));
+    field(
+        "pause_auto_cancel_seconds",
+        std::to_string(cfg.pauseAutoCancelSeconds),
+        {"任务暂停多少秒后自动终止并释放名额，手动暂停同样适用"}
+    );
 
-    appendComment(out, {"是否要求下蹲才响应木棍点击",
-                        "false：站立与下蹲都会触发；true：只有下蹲才触发，站立点击完全无响应"});
-    appendField(out, "stick_requires_sneak", cfg.stickRequiresSneak ? "true" : "false");
+    field(
+        "stick_requires_sneak",
+        cfg.stickRequiresSneak ? "true" : "false",
+        {"是否要求下蹲才响应木棍点击",
+         "false：站立与下蹲都会触发；true：只有下蹲才触发，站立点击完全无响应"}
+    );
 
-    appendComment(out, {"清扫收费规格阶梯",
-                        "字段说明：",
-                        "  levelname       该档位的显示名称",
-                        "  max_width       该档位覆盖的最大 X 跨度（含）",
-                        "  max_depth       该档位覆盖的最大 Z 跨度（含）",
-                        "  price_per_layer 该档位的每层单价",
-                        "按面积从小到大排列；选区按自身 X/Z 跨度依次匹配第一个满足条件的档位"});
-    out += "    \"price_levels\": [\n";
+    {
+        std::string block;
+        appendComment(
+            block,
+            {"清扫收费规格阶梯",
+             "字段说明：",
+             "  levelname       该档位的显示名称",
+             "  max_width       该档位覆盖的最大 X 跨度（含）",
+             "  max_depth       该档位覆盖的最大 Z 跨度（含）",
+             "  price_per_layer 该档位的每层单价",
+             "按面积从小到大排列；选区按自身 X/Z 跨度依次匹配第一个满足条件的档位"}
+        );
+        block += "    \"price_levels\": [\n";
 
-    for (size_t i = 0; i < cfg.priceLevels.size(); ++i) {
-        auto const& level = cfg.priceLevels[i];
-        out += "\n\n";
-        out += "        // 第 " + std::to_string(i + 1) + " 档\n";
-        out += "        {\n";
-        out += "            \"levelname\": " + jsonString(level.levelname) + ",\n";
-        out += "            \"max_width\": " + std::to_string(level.maxWidth) + ",\n";
-        out += "            \"max_depth\": " + std::to_string(level.maxDepth) + ",\n";
-        out += "            \"price_per_layer\": " + std::to_string(level.pricePerLayer) + "\n";
-        out += "        }";
-        if (i + 1 < cfg.priceLevels.size()) {
-            out += ",";
+        for (size_t i = 0; i < cfg.priceLevels.size(); ++i) {
+            auto const& level = cfg.priceLevels[i];
+            block += "\n\n";
+            block += "        // 第 " + std::to_string(i + 1) + " 档\n";
+            block += "        {\n";
+            block += "            \"levelname\": " + jsonString(level.levelname) + ",\n";
+            block += "            \"max_width\": " + std::to_string(level.maxWidth) + ",\n";
+            block += "            \"max_depth\": " + std::to_string(level.maxDepth) + ",\n";
+            block += "            \"price_per_layer\": " + std::to_string(level.pricePerLayer) + "\n";
+            block += "        }";
+            if (i + 1 < cfg.priceLevels.size()) {
+                block += ",";
+            }
+            block += "\n";
         }
-        out += "\n";
+
+        block += "\n\n    ]";
+        blocks.emplace_back("price_levels", std::move(block));
     }
 
-    out += "\n\n    ]\n}\n";
+    return blocks;
+}
+
+std::string renderConfig(Config const& cfg) {
+    auto const  blocks = buildFieldBlocks(cfg);
+    std::string out    = "{\n";
+
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        out += blocks[i].second;
+        out += (i + 1 < blocks.size()) ? ",\n\n\n" : "\n}\n";
+    }
     return out;
+}
+
+/// 把现有配置文件里缺失的新版本字段追加到末尾（保留用户已有内容与注释）
+bool appendMissingFields(
+    std::filesystem::path const& file,
+    std::string const&           text,
+    nlohmann::json const&        root,
+    Config const&                cfg
+) {
+    std::string addendum;
+    std::string names;
+
+    for (auto const& [key, block] : buildFieldBlocks(cfg)) {
+        if (root.contains(key)) {
+            continue;
+        }
+        addendum += ",\n\n\n";
+        addendum += block;
+        if (!names.empty()) {
+            names += "、";
+        }
+        names += key;
+    }
+
+    if (addendum.empty()) {
+        return false;
+    }
+
+    auto const closePos = text.find_last_of('}');
+    if (closePos == std::string::npos) {
+        return false;
+    }
+
+    std::string body = text.substr(0, closePos);
+    while (!body.empty() && std::isspace(static_cast<unsigned char>(body.back()))) {
+        body.pop_back();
+    }
+    if (!body.empty() && body.back() == ',') {
+        body.pop_back();
+    }
+
+    std::string merged = body + addendum + "\n}\n";
+
+    // 先自检能解析再落盘，绝不写坏用户文件
+    if (nlohmann::json::parse(merged, nullptr, false, true).is_discarded()) {
+        log::get().warn("自动补充配置字段失败（生成内容无法解析），原文件保持不变。");
+        return false;
+    }
+
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        log::get().warn("无法写回配置文件 {}，缺失字段将在下次启动重试。", file.string());
+        return false;
+    }
+    out << merged;
+    out.close();
+
+    log::get().info("配置文件已自动补充新版本字段: {}", names);
+    return true;
 }
 
 
@@ -416,6 +545,11 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
             mPath = jsoncPath;
             log::get().warn("配置迁移写入失败，继续使用已解析的配置，请检查目录写权限。");
         }
+    }
+
+    // 新版本新增的字段：自动补进现有配置文件（保留用户已有内容与注释，不覆盖任何值）
+    if (!legacyPseudoKeys) {
+        appendMissingFields(mPath, text, root, cfg);
     }
 
     mConfig = std::move(cfg);
