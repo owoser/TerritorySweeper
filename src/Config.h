@@ -37,6 +37,8 @@ struct Config {
     // ---- 显示 ----
     /// BossBar 进度条（BossEvent + AddActor 假实体）。进服异常时可用它快速排查。
     bool bossBarEnabled{true};
+    /// BossBar 刷新方式：incremental（只发变化字段）/ recreate（每秒完整重建）
+    std::string bossBarUpdateMode{"incremental"};
     /// DebugShape 选区 / 任务区域线框
     bool regionFrameEnabled{true};
 

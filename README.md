@@ -215,7 +215,24 @@ LSE `PlayerClass::setBossBar`（也就是 YEssential/Fcam 用的那个 API）的
 > `AddActorPacket` 的构造函数未导出，必须通过 `MinecraftPackets::createPacket(MinecraftPacketIds::AddActor)`
 > 创建（与 LSE 一致）。若运行时该工厂不可用，会跳过 AddActor 并仅发送 BossEvent，不会崩服。
 
-排查开关：`bossbar_enabled` / `region_frame_enabled`，任一关闭即可隔离显示层。
+**实现要点（对齐 LL 文档 / LSE）**
+
+- 两个包都通过 `MinecraftPackets::createPacket(MinecraftPacketIds::…)` 创建：
+  包头里的 `mSerializationMode` 由 BDS 构造函数初始化，栈上默认构造会留下未定义值，
+  写出来的包可能不合规（曾导致客户端 `ClientDisconnection`）。
+- 字段直接通过文档公开的成员访问（`mBossID / mEventType / mName / mHealthPercent / mColor / mOverlay`），
+  不再手动 `static_cast` 到 payload 结构。
+- 创建后校验 `pkt->getId()` 与期望一致，避免类型不符时强转。
+
+**刷新策略**：`bossbar_update_mode`
+
+| 值 | 行为 | 包量 |
+| :--- | :--- | :--- |
+| `incremental`（默认） | 首次 Add，之后只发变化的 `UpdateName` / `UpdatePercent` / `UpdateStyle` | 1~2 包/秒 |
+| `recreate` | 每秒 Remove → AddActor → Add 完整重建（与 LSE 一致） | 3 包/秒 |
+
+**排查开关**：`bossbar_enabled` / `region_frame_enabled`，任一关闭即可隔离显示层；
+`debug: true` 打开后会输出每个 `[bossbar]` 发包与 `[task]` 推进日志。
 
 ## 10. 已知取舍
 

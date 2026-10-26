@@ -1,6 +1,7 @@
 #include "Visual.h"
 
 #include "Compat.h"
+#include "Config.h"
 #include "Global.h"
 
 #include "mc/legacy/ActorRuntimeID.h"
@@ -49,92 +50,106 @@ std::string uuidKey(mce::UUID const& uuid) { return uuid.asString(); }
 constexpr int worldMinYFor(int dimId) { return (dimId == 1 || dimId == 2) ? 0 : -64; }
 
 /// BossBar 的 id 同时充当 ActorUniqueID 与 ActorRuntimeID。
-/// 取一个远离真实实体 id（服务器内自增的小整数）的常规正值区间，避免客户端出现异常值。
-int64_t makeBossId(std::size_t index) {
-    return (int64_t)1'000'000'000'000LL + (int64_t)(index & 0xFFFF);
+/// 取一个远离真实实体 id（服务器内自增的小整数）的常规正值区间。
+int64_t makeBossId(std::size_t index) { return (int64_t)1'000'000'000'000LL + (int64_t)(index & 0xFFFF); }
+
+/// 通过 BDS 工厂创建网络包。
+/// 这些包头部的 mSerializationMode 由 BDS 构造函数初始化，栈上默认构造会留下脏值。
+template <class TPacket>
+std::shared_ptr<TPacket> createPacket(MinecraftPacketIds expected) {
+    auto base = MinecraftPackets::createPacket(expected);
+    if (!base) {
+        log::get().warn("[bossbar] MinecraftPackets::createPacket({}) 返回空", static_cast<int>(expected));
+        return nullptr;
+    }
+    if (base->getId() != expected) {
+        log::get().warn(
+            "[bossbar] 包类型不匹配：期望 {} 实际 {}",
+            static_cast<int>(expected),
+            static_cast<int>(base->getId())
+        );
+        return nullptr;
+    }
+    return std::static_pointer_cast<TPacket>(base);
 }
 
-/// 发送一条 BossEvent 包
+/// 每玩家每 bar 的显示状态，避免重复发包与无谓的文本刷新
+struct BossBarState {
+    bool        shown{false};
+    std::string lastTitle;
+    int         lastPercent{-1};
+    BarColor    lastColor{BarColor::Green};
+};
+
+std::unordered_map<std::string, BossBarState>& barStateStore() {
+    static std::unordered_map<std::string, BossBarState> store;
+    return store;
+}
+
+std::string barStateKey(Player const& player, int64_t bossId) {
+    return player.getUuid().asString() + "/" + std::to_string(bossId);
+}
+
+BossBarState& barState(Player const& player, int64_t bossId) { return barStateStore()[barStateKey(player, bossId)]; }
+
+/// 发送 BossEvent。只填充该事件类型需要的字段，其余保持默认。
 void sendBossEvent(
-    Player&             player,
-    int64_t             bossId,
-    BossEventUpdateType type,
-    std::string const&  title,
-    float               progress01,
-    BarColor            color
+    Player&                    player,
+    int64_t                    bossId,
+    BossEventUpdateType        type,
+    std::string const*         title,
+    std::optional<float>       percent01,
+    std::optional<BarColor>    color
 ) {
-    // 必须像 LSE 一样通过 MinecraftPackets 工厂创建：栈上默认构造时
-    // mSerializationMode 等字段未经 BDS 初始化，写出的包可能不合规。
-    auto base = MinecraftPackets::createPacket(MinecraftPacketIds::BossEvent);
-    if (!base) {
-        log::get().warn("createPacket(BossEvent) 返回空，跳过 BossBar 发包");
-        return;
-    }
-    auto* pkt = static_cast<BossEventPacket*>(base.get());
+    auto pkt = createPacket<BossEventPacket>(MinecraftPacketIds::BossEvent);
     if (!pkt) {
         return;
     }
 
-    auto& payload = static_cast<BossEventPacketPayload&>(*pkt);
+    pkt->mBossID    = ActorUniqueID{bossId};
+    pkt->mEventType = type;
 
-    payload.mBossID        = ActorUniqueID{bossId};
-    payload.mEventType     = type;
-    payload.mName          = Bedrock::Safety::RedactableString{title};
-    payload.mHealthPercent = clamp01(progress01);
-    payload.mColor         = static_cast<BossBarColor>(color);
-    payload.mOverlay       = BossBarOverlay::Progress;
+    if (title) {
+        pkt->mName = Bedrock::Safety::RedactableString{*title};
+    }
+    if (percent01) {
+        pkt->mHealthPercent = clamp01(*percent01);
+    }
+    if (color) {
+        pkt->mColor   = static_cast<BossBarColor>(*color);
+        pkt->mOverlay = BossBarOverlay::Progress;
+    }
 
     player.sendNetworkPacket(*pkt);
 
     TS_DBG(
-        "[bossbar] 发包 type={} id=0x{:016X} percent={:.2f} player={}",
-        (int)type,
-        (uint64)bossId,
-        clamp01(progress01),
+        "[bossbar] 发包 type={} id={} percent={} player={}",
+        static_cast<int>(type),
+        bossId,
+        percent01 ? clamp01(*percent01) : -1.0f,
         player.getRealName()
     );
 }
 
-/// 先给客户端造一个"看不见的玩家实体"，BossBar 必须挂在实体上才能渲染。
-/// 注意：AddActorPacket 的构造函数未导出，必须像 LSE 一样走 MinecraftPackets 工厂。
+/// 给客户端造一个看不见的玩家实体：BossBar 必须挂在实体上才能渲染
 void sendFakeBossActor(Player& player, int64_t bossId) {
-    auto base = MinecraftPackets::createPacket(MinecraftPacketIds::AddActor);
-    if (!base) {
-        return;
-    }
-    auto* pkt = static_cast<AddActorPacket*>(base.get());
+    auto pkt = createPacket<AddActorPacket>(MinecraftPacketIds::AddActor);
     if (!pkt) {
         return;
     }
 
-    auto& payload = static_cast<AddActorPacketPayload&>(*pkt);
-
-    payload.mEntityId  = ActorUniqueID{bossId};
-    payload.mRuntimeId = ActorRuntimeID{(uint64)bossId};
-    payload.mActorType = std::string{"player"};
+    pkt->mEntityId  = ActorUniqueID{bossId};
+    pkt->mRuntimeId = ActorRuntimeID{static_cast<uint64>(bossId)};
+    pkt->mActorType = std::string{"player"};
 
     Vec3 pos = player.getFeetPos();
-    pos.y    = (float)(worldMinYFor((int)player.getDimensionId()) - 64);
-    payload.mPos = pos;
+    pos.y    = static_cast<float>(worldMinYFor(static_cast<int>(player.getDimensionId())) - 64);
+    pkt->mPos = pos;
 
     // 其余字段（速度/旋转/属性/同步数据/连接）保持默认空值，与 LSE 的做法一致
     player.sendNetworkPacket(*pkt);
 
-    TS_DBG(
-        "[bossbar] AddActor id=0x{:016X} runtimeId=0x{:016X} pos=({:.1f},{:.1f},{:.1f})",
-        (uint64)bossId,
-        (uint64)bossId,
-        payload.mPos->x,
-        payload.mPos->y,
-        payload.mPos->z
-    );
-}
-
-/// 与 LSE PlayerClass::setBossBar 完全一致的发送顺序：Remove -> AddActor -> Add
-void pushBossBar(Player& player, int64_t bossId, std::string const& title, float progress01, BarColor color) {
-    sendBossEvent(player, bossId, BossEventUpdateType::Remove, title, progress01, color);
-    sendFakeBossActor(player, bossId);
-    sendBossEvent(player, bossId, BossEventUpdateType::Add, title, progress01, color);
+    TS_DBG("[bossbar] AddActor id={} pos=({:.1f},{:.1f},{:.1f})", bossId, pos.x, pos.y, pos.z);
 }
 
 } // namespace
@@ -155,20 +170,77 @@ int64_t BossBar::idFor(std::string const& key) {
 }
 
 void BossBar::show(Player& player, int64_t bossId, std::string const& title, float progress01, BarColor color) {
-    pushBossBar(player, bossId, title, progress01, color);
+    std::lock_guard lock(mutex());
+
+    // 与 LSE PlayerClass::setBossBar 一致：先清旧条，再造实体，最后挂条形
+    sendBossEvent(player, bossId, BossEventUpdateType::Remove, nullptr, std::nullopt, std::nullopt);
+    sendFakeBossActor(player, bossId);
+    sendBossEvent(player, bossId, BossEventUpdateType::Add, &title, progress01, color);
+
+    auto& state   = barState(player, bossId);
+    state.shown       = true;
+    state.lastTitle   = title;
+    state.lastPercent = static_cast<int>(std::lround(clamp01(progress01) * 100.0f));
+    state.lastColor   = color;
 }
 
 void BossBar::update(Player& player, int64_t bossId, std::string const& title, float progress01, BarColor color) {
-    // LSE 没有"增量更新"接口，Fcam 也是每秒重新 setBossBar 一次；这里保持一致
-    pushBossBar(player, bossId, title, progress01, color);
+    std::lock_guard lock(mutex());
+
+    auto& state = barState(player, bossId);
+    if (!state.shown || ConfigManager::getInstance().get().bossBarUpdateMode == "recreate") {
+        // 回退路径：每秒完整重建（与 LSE 行为一致，兼容性最好）
+        sendBossEvent(player, bossId, BossEventUpdateType::Remove, nullptr, std::nullopt, std::nullopt);
+        sendFakeBossActor(player, bossId);
+        sendBossEvent(player, bossId, BossEventUpdateType::Add, &title, progress01, color);
+        state.shown       = true;
+        state.lastTitle   = title;
+        state.lastPercent = static_cast<int>(std::lround(clamp01(progress01) * 100.0f));
+        state.lastColor   = color;
+        return;
+    }
+
+    // 增量路径：只发真正变化的字段，把每秒 3 个包降到 1~2 个
+    if (title != state.lastTitle) {
+        sendBossEvent(player, bossId, BossEventUpdateType::UpdateName, &title, std::nullopt, std::nullopt);
+        state.lastTitle = title;
+    }
+
+    int const percent = static_cast<int>(std::lround(clamp01(progress01) * 100.0f));
+    if (percent != state.lastPercent) {
+        sendBossEvent(player, bossId, BossEventUpdateType::UpdatePercent, nullptr, progress01, std::nullopt);
+        state.lastPercent = percent;
+    }
+
+    if (color != state.lastColor) {
+        sendBossEvent(player, bossId, BossEventUpdateType::UpdateStyle, nullptr, std::nullopt, color);
+        state.lastColor = color;
+    }
 }
 
 void BossBar::hide(Player& player, int64_t bossId) {
-    sendBossEvent(player, bossId, BossEventUpdateType::Remove, {}, 0.f, BarColor::White);
+    std::lock_guard lock(mutex());
+
+    auto& state = barState(player, bossId);
+    if (!state.shown) {
+        return;
+    }
+    sendBossEvent(player, bossId, BossEventUpdateType::Remove, nullptr, std::nullopt, std::nullopt);
+    state.shown = false;
 }
 
 void BossBar::forget(mce::UUID const& uuid) {
     std::lock_guard lock(mutex());
+
+    auto const prefix = uuid.asString() + "/";
+    auto&      states = barStateStore();
+    for (auto it = states.begin(); it != states.end();) {
+        if (it->first.rfind(prefix, 0) == 0) {
+            it = states.erase(it);
+        } else {
+            ++it;
+        }
+    }
     bossIdStore().erase(uuidKey(uuid));
 }
 

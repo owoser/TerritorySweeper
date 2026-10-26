@@ -76,6 +76,10 @@ std::string renderConfig(Config const& cfg) {
                         "若进服出现异常断开，可先关闭此项排查"});
     appendField(out, "bossbar_enabled", cfg.bossBarEnabled ? "true" : "false");
 
+    appendComment(out, {"BossBar 刷新方式：incremental 只发送变化的字段（省流量）",
+                        "recreate 每秒完整重建（兼容性最好，出现显示异常时可切到它）"});
+    appendField(out, "bossbar_update_mode", jsonString(cfg.bossBarUpdateMode));
+
     appendComment(out, {"是否显示选区与任务区域的调试线框（依赖 DebugShape）"});
     appendField(out, "region_frame_enabled", cfg.regionFrameEnabled ? "true" : "false");
 
@@ -317,6 +321,7 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "global_task_limit", cfg.globalTaskLimit);
     readIfPresent(root, "player_task_limit", cfg.playerTaskLimit);
     readIfPresent(root, "bossbar_enabled", cfg.bossBarEnabled);
+    readIfPresent(root, "bossbar_update_mode", cfg.bossBarUpdateMode);
     readIfPresent(root, "region_frame_enabled", cfg.regionFrameEnabled);
     readIfPresent(root, "layer_countdown_seconds", cfg.layerCountdownSeconds);
     readIfPresent(root, "chunked_clean_enabled", cfg.chunkedCleanEnabled);
