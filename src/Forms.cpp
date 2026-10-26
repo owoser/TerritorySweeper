@@ -323,9 +323,9 @@ void openManage(Player& player, SweepTask& task) {
                      ? "当前：清理中"
                      : "当前：" + std::string{info.name} + " " + std::to_string(info.remainSeconds) + " 秒";
     } else {
-        content += "已暂停：" + std::to_string(task.pausedSeconds) + " 秒（"
-                 + std::to_string(ConfigManager::getInstance().get().pauseAutoCancelSeconds)
-                 + " 秒后自动终止）";
+        auto const info = describePhase(task);
+        content += "已暂停：" + std::to_string(task.pausedSeconds) + " 秒\n";
+        content += "释放倒计时：剩余 " + std::to_string(info.remainSeconds) + " 秒";
     }
 
     SimpleForm form("领地清扫管理");

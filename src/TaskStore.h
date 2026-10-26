@@ -33,6 +33,11 @@ bool deleteBill(int64_t landId);
 int64_t getMetaInt(std::string_view key, int64_t fallback);
 bool    setMetaInt(std::string_view key, int64_t value);
 
+/// 离线退款暂存
+bool                        insertPendingPayout(PendingPayout const& payout);
+std::vector<PendingPayout>  loadPendingPayouts(std::string const& ownerUuid);
+bool                        markPayoutPaid(int64_t id);
+
 /// 退款审计
 bool recordRefund(
     uint64_t           taskId,

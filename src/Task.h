@@ -133,6 +133,7 @@ enum class BarPhase {
     Clearing,       ///< 正在清理
     LayerCountdown, ///< 层间倒计时
     ChunkInterval,  ///< 分块间隔
+    Paused,         ///< 已暂停，显示释放倒计时
 };
 
 struct PhaseInfo {
@@ -171,6 +172,18 @@ struct PendingBill {
     std::string ownerXuid;
     mce::UUID   ownerUuid{};
     SweepPlan   plan;
+    int64_t     createdAt{0};
+};
+
+/// 待发放的退款（玩家离线时经济后端无法入账，先入库，上线补发）
+struct PendingPayout {
+    int64_t     id{0};
+    std::string ownerUuid;
+    std::string ownerName;
+    std::string ownerXuid;
+    int64_t     amount{0};
+    std::string reason;
+    uint64_t    taskId{0};
     int64_t     createdAt{0};
 };
 
@@ -221,6 +234,8 @@ private:
 
     void            stepTask(SweepTask& task);
     void            advanceEmptyUnits(SweepTask& task);
+    /// 把离线期间暂存的退款发放给该玩家
+    void            deliverPendingPayouts(Player& player);
     void            clearUnit(SweepTask& task);
     void            updateBossBar(SweepTask& task, Player& player);
     void            updateBossBarImpl(SweepTask& task, Player& player);

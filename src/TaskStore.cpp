@@ -332,6 +332,20 @@ CREATE TABLE IF NOT EXISTS bills (
     land_max_z      INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS pending_payouts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_uuid TEXT    NOT NULL,
+    owner_name TEXT    NOT NULL,
+    owner_xuid TEXT    NOT NULL,
+    amount     INTEGER NOT NULL,
+    reason     TEXT    NOT NULL,
+    task_id    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    paid       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_payouts_pending ON pending_payouts(paid, owner_uuid);
+
 CREATE TABLE IF NOT EXISTS refunds (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    INTEGER NOT NULL,
@@ -355,7 +369,7 @@ CREATE TABLE IF NOT EXISTS refunds (
             version = st.columnInt(0);
         }
     }
-    constexpr int64_t kCurrentVersion = 2;
+    constexpr int64_t kCurrentVersion = 3;
 
     if (version == 0) {
         database.exec("PRAGMA user_version = 1;", "schema:set-version");
@@ -375,6 +389,13 @@ CREATE TABLE IF NOT EXISTS refunds (
         database.exec("PRAGMA user_version = 2;", "schema:set-version");
         log::get().info("数据库已从 schema v{} 迁移到 v2（新增领地 AABB 列）。", version);
         version = 2;
+    }
+
+    // v2 -> v3：离线退款暂存表
+    if (version < 3) {
+        database.exec("PRAGMA user_version = 3;", "schema:set-version");
+        log::get().info("数据库已升级到 schema v3（新增离线退款暂存表）。");
+        version = 3;
     }
 
     if (version > kCurrentVersion) {
@@ -527,9 +548,8 @@ std::vector<SweepTask> loadTasks() {
         }
         seenLands.insert(task.plan.landId);
 
-        // 重启后统一恢复为暂停，等待领主手动继续
-        task.state         = TaskState::Paused;
-        task.pausedSeconds = 0;
+        // 重启后统一恢复为暂停，但保留已消耗的暂停秒数（释放倒计时续走）
+        task.state = TaskState::Paused;
         out.push_back(std::move(task));
     }
     return out;
@@ -611,6 +631,82 @@ std::vector<PendingBill> loadBills() {
 // ---------------------------------------------------------------------------
 // refunds
 // ---------------------------------------------------------------------------
+
+bool insertPendingPayout(PendingPayout const& payout) {
+    auto& database = Database::getInstance();
+    if (!database.ok()) {
+        return false;
+    }
+
+    Statement st{
+        database.raw(),
+        "INSERT INTO pending_payouts "
+        "(owner_uuid, owner_name, owner_xuid, amount, reason, task_id, created_at, paid) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0);",
+        "payout:insert"
+    };
+    if (!st.valid()) {
+        return false;
+    }
+
+    st.bind(1, payout.ownerUuid);
+    st.bind(2, payout.ownerName);
+    st.bind(3, payout.ownerXuid);
+    st.bind(4, payout.amount);
+    st.bind(5, payout.reason);
+    st.bind(6, (int64_t)payout.taskId);
+    st.bind(7, nowSeconds());
+
+    return st.execute();
+}
+
+std::vector<PendingPayout> loadPendingPayouts(std::string const& ownerUuid) {
+    std::vector<PendingPayout> out;
+
+    auto& database = Database::getInstance();
+    if (!database.ok() || ownerUuid.empty()) {
+        return out;
+    }
+
+    Statement st{
+        database.raw(),
+        "SELECT id, owner_uuid, owner_name, owner_xuid, amount, reason, task_id, created_at "
+        "FROM pending_payouts WHERE paid = 0 AND owner_uuid = ? ORDER BY id;",
+        "payout:load"
+    };
+    if (!st.valid()) {
+        return out;
+    }
+    st.bind(1, ownerUuid);
+
+    while (st.next()) {
+        PendingPayout payout;
+        payout.id        = st.columnInt(0);
+        payout.ownerUuid = st.columnText(1);
+        payout.ownerName = st.columnText(2);
+        payout.ownerXuid = st.columnText(3);
+        payout.amount    = st.columnInt(4);
+        payout.reason    = st.columnText(5);
+        payout.taskId    = (uint64_t)st.columnInt(6);
+        payout.createdAt = st.columnInt(7);
+        out.push_back(std::move(payout));
+    }
+    return out;
+}
+
+bool markPayoutPaid(int64_t id) {
+    auto& database = Database::getInstance();
+    if (!database.ok() || id <= 0) {
+        return false;
+    }
+
+    Statement st{database.raw(), "UPDATE pending_payouts SET paid = 1 WHERE id = ?;", "payout:paid"};
+    if (!st.valid()) {
+        return false;
+    }
+    st.bind(1, id);
+    return st.execute();
+}
 
 bool recordRefund(
     uint64_t           taskId,

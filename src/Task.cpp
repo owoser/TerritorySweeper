@@ -418,8 +418,9 @@ void TaskManager::pauseTask(uint64_t id, std::string const& reason) {
     task->leavePaused   = false; // 调用方若因"离开领地"触发，会在返回后置 true
 
     if (auto* owner = findOwner(*task); owner) {
-        visual::BossBar::hide(*owner, visual::BossBar::idFor("task-" + std::to_string(task->id)));
-        visual::RegionRenderer::clearBox(*owner, "task-frame");
+        // 暂停期间继续显示：BossBar 变成"释放倒计时"，清理范围线框保持不消失
+        task->bossShown = false;
+        updateBossBar(*task, *owner);
         owner->sendMessage("§e[领地清扫] 任务已暂停：" + reason);
     }
     log::get().info("任务 #{} 已暂停：{}", id, reason);
@@ -547,18 +548,23 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
         }
     }
 
-    std::string title = "§e[领地清扫] §f第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层";
-
-    int const chunks = task.chunksPerLayer();
-    if (task.plan.chunked && chunks > 1) {
-        int const chunkCur = std::min(task.chunkIndex + 1, chunks);
-        title += " §7| §b分块 " + std::to_string(chunkCur) + "/" + std::to_string(chunks);
-    }
-
-    if (span > 0) {
-        title += std::string{" §7| "} + info.name + " §c" + std::to_string(remain) + "s";
+    std::string title;
+    if (info.phase == BarPhase::Paused) {
+        title = "§c[领地清扫] §f任务已暂停 §7| §c释放倒计时 " + std::to_string(remain) + "s";
     } else {
-        title += " §7| §a清理中";
+        title = "§e[领地清扫] §f第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层";
+
+        int const chunks = task.chunksPerLayer();
+        if (task.plan.chunked && chunks > 1) {
+            int const chunkCur = std::min(task.chunkIndex + 1, chunks);
+            title += " §7| §b分块 " + std::to_string(chunkCur) + "/" + std::to_string(chunks);
+        }
+
+        if (span > 0) {
+            title += std::string{" §7| "} + info.name + " §c" + std::to_string(remain) + "s";
+        } else {
+            title += " §7| §a清理中";
+        }
     }
 
     title += " §7| §a进度 " + percentText(task.progressPercent());
@@ -871,9 +877,20 @@ void TaskManager::tick() {
 
         if (task.state == TaskState::Paused) {
             ++task.pausedSeconds;
+
             if (task.pausedSeconds >= std::max(1, cfg.pauseAutoCancelSeconds)) {
                 toKill.push_back(task.id);
                 continue;
+            }
+
+            // 领主在线时刷新"释放倒计时"，否则无从显示
+            if (owner) {
+                updateBossBar(task, *owner);
+            }
+
+            // 每 5 秒落库一次，重启后可续走倒计时（崩溃最多丢 5 秒）
+            if (task.pausedSeconds % 5 == 0) {
+                db::upsertTask(task);
             }
             continue;
         }
@@ -896,7 +913,59 @@ void TaskManager::onPlayerJoin(Player& player) {
     // 这里只重置显示状态，真正发包交给下一轮 tick（玩家已完全进入世界）。
     if (auto* task = taskOfPlayer(player.getUuid()); task) {
         task->bossShown = false;
-        (void)player;
+    }
+
+    // 补发离线期间的退款（此时玩家在线，经济后端一定可用）
+    deliverPendingPayouts(player);
+}
+
+void TaskManager::deliverPendingPayouts(Player& player) {
+    auto payouts = db::loadPendingPayouts(player.getUuid().asString());
+    if (payouts.empty()) {
+        return;
+    }
+
+    auto&     economyService = economy::EconomyService::getInstance();
+    int64_t   total          = 0;
+    int       count          = 0;
+    int       failed         = 0;
+
+    for (auto const& payout : payouts) {
+        economy::ChargeTarget target;
+        target.xuid = payout.ownerXuid;
+        target.name = payout.ownerName;
+        target.uuid = player.getUuid();
+
+        if (!economyService.add(target, payout.amount)) {
+            ++failed;
+            log::get().error(
+                "补发离线退款失败（任务 #{}，玩家 {}，金额 {}）。",
+                payout.taskId,
+                payout.ownerName,
+                payout.amount
+            );
+            continue;
+        }
+
+        db::markPayoutPaid(payout.id);
+        total += payout.amount;
+        ++count;
+    }
+
+    std::string const moneyname = ConfigManager::getInstance().get().moneyname;
+
+    if (count > 0) {
+        player.sendMessage(
+            "§a[领地清扫] 已补发离线期间的退款 " + std::to_string(total) + " " + moneyname + "（"
+            + std::to_string(count) + " 笔）"
+        );
+        log::get().info("已向 {} 补发离线退款 {}（{} 笔）", player.getRealName(), total, count);
+    }
+
+    if (failed > 0) {
+        player.sendMessage(
+            "§c[领地清扫] 有 " + std::to_string(failed) + " 笔离线退款补发失败，将在下次登录时重试。"
+        );
     }
 }
 
@@ -953,6 +1022,15 @@ std::string percentText(int value) { return std::to_string(value) + "％"; }
 
 PhaseInfo describePhase(SweepTask const& task) {
     PhaseInfo info;
+
+    if (task.state == TaskState::Paused) {
+        int const total    = std::max(1, ConfigManager::getInstance().get().pauseAutoCancelSeconds);
+        info.phase         = BarPhase::Paused;
+        info.remainSeconds = std::max(0, total - task.pausedSeconds);
+        info.spanSeconds   = total;
+        info.name          = "释放倒计时";
+        return info;
+    }
 
     if (task.chunkCooldown > 0) {
         info.phase         = BarPhase::ChunkInterval;
@@ -1145,9 +1223,44 @@ int64_t TaskManager::refundTask(SweepTask& task, std::string const& reason) {
     target.uuid = task.ownerUuid;
 
     auto& economyService = economy::EconomyService::getInstance();
-    bool  credited       = economyService.add(target, amount);
+
+    bool const ownerOnline = findOwner(task) != nullptr;
+    bool       credited    = false;
+
+    // 经济后端（LLMoney / 计分板）都要求玩家在线；离线时改为入库暂存，等上线补发
+    if (ownerOnline) {
+        credited = economyService.add(target, amount);
+    }
 
     db::recordRefund(task.id, task.ownerName, task.ownerXuid, amount, remainingPermille(task), reason);
+
+    if (!ownerOnline) {
+        PendingPayout payout;
+        payout.ownerUuid = task.ownerUuid.asString();
+        payout.ownerName = task.ownerName;
+        payout.ownerXuid = task.ownerXuid;
+        payout.amount    = amount;
+        payout.reason    = reason;
+        payout.taskId    = task.id;
+
+        if (db::insertPendingPayout(payout)) {
+            log::get().info(
+                "任务 #{} 终止退款 {} 已暂存（玩家 {} 离线），等待其上线补发。",
+                task.id,
+                amount,
+                task.ownerName
+            );
+            return amount;
+        }
+
+        log::get().error(
+            "任务 #{} 的离线退款 {} 暂存失败（玩家 {}），请管理员手动补偿。",
+            task.id,
+            amount,
+            task.ownerName
+        );
+        return 0;
+    }
 
     if (!credited) {
         log::get().error(
