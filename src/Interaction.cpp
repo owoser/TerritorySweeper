@@ -17,8 +17,11 @@
 
 #include "mc/world/actor/player/Player.h"
 
+#include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ts::interaction {
@@ -32,6 +35,24 @@ int                                                   gTickCounter = 0;
 
 std::string coordinateText(BlockPos const& pos) {
     return "(" + std::to_string(pos.x) + ", " + std::to_string(pos.y) + ", " + std::to_string(pos.z) + ")";
+}
+
+/// 同一玩家 150ms 内的重复木棍点击只处理一次（BDS 对同一次点击可能触发多个事件）
+bool isDuplicateClick(Player const& player) {
+    using Clock = std::chrono::steady_clock;
+
+    static std::mutex                                     mutex;
+    static std::unordered_map<std::string, Clock::time_point> lastClick;
+
+    auto const key = player.getUuid().asString();
+    auto const now = Clock::now();
+
+    std::lock_guard lock(mutex);
+    if (auto it = lastClick.find(key); it != lastClick.end() && now - it->second < std::chrono::milliseconds(150)) {
+        return true;
+    }
+    lastClick[key] = now;
+    return false;
 }
 
 bool holdingStick(Player& player) {
@@ -48,23 +69,13 @@ void rejectOutOfLand(Player& player, PlayerLand const& land, BlockPos const& pos
     );
 }
 
-/// 木棍点击的统一定点逻辑
+/// 木棍点击的定点逻辑（仅在有活动选区时调用）
 void applyPoint(Player& player, PlayerLand const& land, BlockPos const& pos) {
     auto& selectionManager = SelectionManager::getInstance();
 
     auto state = selectionManager.get(player);
-    if (!state) {
-        auto reject = TaskManager::getInstance().checkCreateAllowed(player, land.land.id);
-        if (!reject.empty()) {
-            player.sendMessage("§c" + reject);
-            return;
-        }
-        selectionManager.begin(player, land);
-        state = selectionManager.get(player);
-        player.sendMessage("§e[领地清扫] 已开启领地边框显示，请使用木棍点击第 1 个方块设置点 A。");
-        if (!state) {
-            return;
-        }
+    if (!state || !state->active) {
+        return;
     }
 
     if (!land.land.contains(pos)) {
@@ -93,14 +104,12 @@ void applyPoint(Player& player, PlayerLand const& land, BlockPos const& pos) {
         return;
     }
 
-    // 已完成选点，再点方块直接打开方向菜单
-    if (auto fresh = selectionManager.get(player); fresh && fresh->complete()) {
-        form::openDirection(player, land, *fresh);
-    }
 }
 
-void handleInteract(Player& player, BlockPos const& blockPos) {
-    if (!holdingStick(player)) {
+/// 木棍交互统一入口（左键 / 右键 / 手机点击 共用）
+void handleStickUse(Player& player, BlockPos const& pos) {
+    // 同一次点击有时会触发多个事件，150ms 内只处理第一次
+    if (isDuplicateClick(player)) {
         return;
     }
 
@@ -125,13 +134,19 @@ void handleInteract(Player& player, BlockPos const& blockPos) {
         return;
     }
 
+    // 选点必须由 /ts new 开启，避免误触直接把玩家带进任务菜单
     auto state = SelectionManager::getInstance().get(player);
-    if (state && state->complete()) {
+    if (!state || !state->active) {
+        player.sendMessage("§e[领地清扫] 请先使用 §f/ts new§e 创建清扫任务，再用木棍选择点 A 与点 B。");
+        return;
+    }
+
+    if (state->complete()) {
         form::openDirection(player, *land, *state);
         return;
     }
 
-    applyPoint(player, *land, blockPos);
+    applyPoint(player, *land, pos);
 }
 
 } // namespace
@@ -145,8 +160,7 @@ void registerListeners() {
             if (!holdingStick(player)) {
                 return;
             }
-            // 木棍点击地面不应触发任何物品行为
-            handleInteract(player, event.blockPos());
+            handleStickUse(player, event.blockPos());
         }
     ));
 
@@ -158,24 +172,7 @@ void registerListeners() {
             }
             // 左键点方块：用于设置点 A，同时阻止木棍真的去破坏方块
             event.cancel();
-            auto land = resolveLandUnderPlayer(player);
-            if (!land) {
-                player.sendMessage("§c[领地清扫] 你不在任何领地内。");
-                return;
-            }
-            if (!land->canManage()) {
-                player.sendMessage("§c[领地清扫] 只有领地主人或管理员可以使用该功能。");
-                return;
-            }
-            if (auto* task = TaskManager::getInstance().taskOfLand(land->land.id); task) {
-                form::openManage(player, *task);
-                return;
-            }
-            if (auto* bill = TaskManager::getInstance().billOfLand(land->land.id); bill) {
-                form::openBill(player, *bill);
-                return;
-            }
-            applyPoint(player, *land, event.pos());
+            handleStickUse(player, event.pos());
         }
     ));
 

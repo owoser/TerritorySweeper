@@ -69,6 +69,15 @@ void handleNew(Player& player, CommandOutput& output) {
         return;
     }
 
+    // 已在选点模式：提示当前进度，不重置已选的点
+    if (auto existing = SelectionManager::getInstance().get(player); existing && existing->active) {
+        std::string a = existing->hasPos1 ? coordinateText(existing->pos1) : "未设置";
+        std::string b = existing->hasPos2 ? coordinateText(existing->pos2) : "未设置";
+        output.success("已在选点模式。");
+        player.sendMessage("§e[领地清扫] 已在选点模式：点 A " + a + "，点 B " + b);
+        return;
+    }
+
     SelectionManager::getInstance().begin(player, *land);
 
     output.success("已进入选点模式。");

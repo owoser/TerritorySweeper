@@ -85,13 +85,12 @@ void openDirection(Player& player, PlayerLand const& land, SelectionState const&
     logger.debug("为 {} 打开方向选择表单（领地#{}）", player.getRealName(), land.land.id);
 
     std::string content =
-        "请选择本次清扫任务朝向。\n"
-        "向上清理为无任何方块的空气层截止。\n"
-        "向下清理为最后一层基岩层截止。\n"
-        "中途可使用木棍点击打开任务菜单进行暂停或者终止任务。\n"
-        "注意：清理始发地为玩家脚下坐标。\n"
-        "\n选区范围：X " + std::to_string(selection.pos1.x) + "~" + std::to_string(selection.pos2.x) + "  Z "
-        + std::to_string(selection.pos1.z) + "~" + std::to_string(selection.pos2.z);
+        "清理始发地：玩家脚下坐标\n"
+        "向上清理：到上方第一层全空气层为止\n"
+        "向下清理：到最后一层基岩之上为止\n"
+        "§7中途可用木棍点击打开任务菜单暂停或终止\n"
+        "\n选区：X " + std::to_string(selection.pos1.x) + " ~ " + std::to_string(selection.pos2.x) + "   Z "
+        + std::to_string(selection.pos1.z) + " ~ " + std::to_string(selection.pos2.z);
 
     ModalForm form("领地清扫任务", content, "§a向上清理", "§b向下清理");
 
