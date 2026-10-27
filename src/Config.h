@@ -20,7 +20,7 @@ struct PriceLevel {
  * 所有字段名与 config.json 中的键一一对应，缺省值即为默认配置。
  */
 struct Config {
-    int configVersion{1};
+    int configVersion{2};
 
     /// 调试模式：输出发包、任务推进、交互等详细日志（排查用，平时保持 false）
     bool debugEnabled{false};

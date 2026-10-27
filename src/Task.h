@@ -212,7 +212,7 @@ public:
     [[nodiscard]] PendingBill* billOfLand(int64_t landId);
     [[nodiscard]] PendingBill const* billOfLand(int64_t landId) const;
 
-    /// 该坐标是否落在某个"运行中"任务的清理范围内（液体拦截用）
+    /// 该坐标是否落在某个任务（运行中或已暂停）的清理范围内（液体拦截用）
     [[nodiscard]] bool isInsideActiveTask(int dimId, BlockPos const& pos) const;
 
     /// 返回空串表示允许创建；否则为拒绝原因

@@ -359,7 +359,8 @@ PendingBill const* TaskManager::billOfLand(int64_t landId) const {
 
 bool TaskManager::isInsideActiveTask(int dimId, BlockPos const& pos) const {
     for (auto const& task : mTasks) {
-        if (task.state != TaskState::Running) {
+        // 运行中与已暂停都算"仍在使用该区域"；任务结束/终止后会被移出列表，拦截自然失效
+        if (task.state != TaskState::Running && task.state != TaskState::Paused) {
             continue;
         }
         if (task.plan.dimId != dimId) {

@@ -327,6 +327,78 @@ bool appendMissingFields(
     return true;
 }
 
+/// 配置版本迁移：重写配置以移除废弃字段（写入前备份原文件）
+bool migrateConfigFile(std::filesystem::path const& file, nlohmann::json const& root, Config& cfg) {
+    constexpr int kCurrentConfigVersion = 2;
+
+    if (cfg.configVersion >= kCurrentConfigVersion) {
+        return false;
+    }
+
+    // 1) 备份
+    auto now = std::time(nullptr);
+    std::tm tmBuf{};
+    localtime_s(&tmBuf, &now);
+    char stampBuf[32]{};
+    std::strftime(stampBuf, sizeof(stampBuf), "%Y%m%d-%H%M%S", &tmBuf);
+
+    auto backup = file;
+    backup += ".bak-";
+    backup += stampBuf;
+
+    std::error_code copyEc;
+    std::filesystem::copy_file(file, backup, std::filesystem::copy_options::overwrite_existing, copyEc);
+    if (copyEc) {
+        log::get().warn("配置迁移前备份失败（{}），已跳过本次迁移。", copyEc.message());
+        return false;
+    }
+
+    // 2) 统计将被移除的未知键
+    auto const  blocks = buildFieldBlocks(cfg);
+    std::string removed;
+
+    for (auto it = root.begin(); it != root.end(); ++it) {
+        bool known = false;
+        for (auto const& [key, block] : blocks) {
+            if (key == it.key()) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            if (!removed.empty()) {
+                removed += "、";
+            }
+            removed += it.key();
+        }
+    }
+
+    // 3) 用当前模板重写（值沿用已解析配置，废弃键自然消失）
+    cfg.configVersion = kCurrentConfigVersion;
+    std::string rendered = renderConfig(cfg);
+
+    if (nlohmann::json::parse(rendered, nullptr, false, true).is_discarded()) {
+        log::get().warn("配置迁移生成的内容无法解析，已放弃写入（原文件未变）。");
+        return false;
+    }
+
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        log::get().warn("配置迁移写入失败（{}），继续使用内存中的配置。", file.string());
+        return false;
+    }
+    out << rendered;
+    out.close();
+
+    log::get().info(
+        "配置已升级到 v{}{}（原文件备份为 {}）",
+        kCurrentConfigVersion,
+        removed.empty() ? "" : "，移除废弃项：" + removed,
+        backup.filename().string()
+    );
+    return true;
+}
+
 
 bool Config::isScoreboardEconomy() const {
     std::string lower = economyType;
@@ -604,9 +676,12 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
         }
     }
 
-    // 新版本新增的字段：自动补进现有配置文件（保留用户已有内容与注释，不覆盖任何值）
     if (!legacyPseudoKeys) {
-        appendMissingFields(mPath, text, root, cfg);
+        // 版本升级：整份重写（移除废弃键、补齐注释），带时间戳备份
+        if (!migrateConfigFile(mPath, root, cfg)) {
+            // 未迁移（已是最新版本）：只把缺失的新字段补进去
+            appendMissingFields(mPath, text, root, cfg);
+        }
     }
 
     mConfig = std::move(cfg);
