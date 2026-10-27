@@ -444,6 +444,11 @@ std::vector<std::string> Config::sanitize() {
     clampInt("chunk_interval_seconds", chunkIntervalSeconds, 0, 2);
     clampInt("player_leave_pause_seconds", playerLeavePauseSeconds, 0, 15);
     clampInt("pause_auto_cancel_seconds", pauseAutoCancelSeconds, 1, 300);
+    // 世界最低层永远保留：该值不允许小于 1
+    if (preserveBottomLayers < 1) {
+        fixed.push_back("preserve_bottom_layers 必须 >= 1（世界最低层必须保留），已回退为 1");
+        preserveBottomLayers = 1;
+    }
 
     if (!isScoreboardEconomy() && economyType != "LLMoney") {
         fixed.push_back("economy_type 仅支持 LLMoney / Scoreboard，已回退为 LLMoney");

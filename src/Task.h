@@ -109,6 +109,8 @@ struct SweepTask {
     bool    leavePaused{false};     ///< 是否因"离开领地/离线"而暂停（用于自动续跑）
     bool    layerHadWork{true};     ///< 当前层是否真的清过方块（空层不消耗倒计时）
     int     waitLoadedTicks{0};     ///< 当前分块等待区块加载的秒数（仅用于告警）
+    int     bedrockRemovedInLayer{0}; ///< 本层已移除的基岩数量（审计用）
+    int     lowestBedrockRemovedY{0}; ///< 本层被移除基岩的最低 Y（审计用）
     int64_t paidAmount{0};
 
     [[nodiscard]] int  chunksPerLayer() const;

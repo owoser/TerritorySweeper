@@ -43,6 +43,8 @@ constexpr char const* kBedrock = "minecraft:bedrock";
 /// 世界最低高度（0 = 主世界，1 = 下界，2 = 末地）
 constexpr int worldMinYForDim(int dimId) { return (dimId == 1 || dimId == 2) ? 0 : -64; }
 
+int worldMinY(int dimId); // 定义在下方，供保护判定复用
+
 /// 该方块是否"保留不动"：既不清除，也不计入可清理工作量
 bool isProtectedBlock(Block const& block, int y, int dimId) {
     if (block.getTypeName() != kBedrock) {
@@ -54,8 +56,13 @@ bool isProtectedBlock(Block const& block, int y, int dimId) {
         return true; // 完全不清理基岩
     }
 
-    int const keep = std::max(0, cfg.preserveBottomLayers);
-    return keep > 0 && y < worldMinYForDim(dimId) + keep;
+    // 绝对地板：世界最低层及其以下永远保留，与配置无关
+    if (y <= worldMinY(dimId)) {
+        return true;
+    }
+
+    int const keep = std::max(1, cfg.preserveBottomLayers);
+    return y < worldMinY(dimId) + keep;
 }
 
 BlockSource* blockSourceFor(int dimId) {
@@ -755,7 +762,37 @@ void TaskManager::clearUnit(SweepTask& task) {
             auto const& block = source->getBlock(pos);
             // 空气与被保护的方块（默认是最底层基岩）保持不动
             if (!block.isAir() && !isProtectedBlock(block, y, task.plan.dimId)) {
-                source->setBlock(pos, air, 3, nullptr, changeContext);
+                bool const isBedrock = (block.getTypeName() == kBedrock);
+
+                // 兜底：绝不允许写入世界最低层及以下
+                if (y <= worldMinY(task.plan.dimId)) {
+                    log::get().error(
+                        "[bedrock] 任务 #{} 试图在世界最低层写入 ({}, {}, {})，已拦截。",
+                        task.id,
+                        pos.x,
+                        pos.y,
+                        pos.z
+                    );
+                } else {
+                    source->setBlock(pos, air, 3, nullptr, changeContext);
+
+                    if (isBedrock) {
+                        if (task.bedrockRemovedInLayer == 0 || y < task.lowestBedrockRemovedY) {
+                            task.lowestBedrockRemovedY = y;
+                        }
+                        ++task.bedrockRemovedInLayer;
+
+                        if (task.bedrockRemovedInLayer == 1) {
+                            TS_DBG(
+                                "[bedrock] 任务 #{} 首次移除基岩于 ({}, {}, {})",
+                                task.id,
+                                pos.x,
+                                pos.y,
+                                pos.z
+                            );
+                        }
+                    }
+                }
             }
 
             ++task.cursor;
@@ -809,6 +846,18 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
     while (budget > 0) {
         if (task.chunkIndex >= totalChunks) {
             bool const previousLayerEmpty = !task.layerHadWork;
+
+            if (task.bedrockRemovedInLayer > 0) {
+                TS_DBG(
+                    "[bedrock] 任务 #{} 层 y={}：移除基岩 {} 块（最低 y={}）",
+                    task.id,
+                    task.plan.layerY(task.layersDone),
+                    task.bedrockRemovedInLayer,
+                    task.lowestBedrockRemovedY
+                );
+            }
+            task.bedrockRemovedInLayer = 0;
+            task.lowestBedrockRemovedY = 0;
 
             ++task.layersDone;
             task.chunkIndex   = 0;
