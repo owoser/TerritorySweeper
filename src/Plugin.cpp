@@ -7,6 +7,7 @@
 #include "Economy.h"
 #include "Global.h"
 #include "Interaction.h"
+#include "LiquidGuard.h"
 #include "Task.h"
 #include "TaskStore.h"
 
@@ -75,12 +76,14 @@ bool Plugin::enable() {
     TaskManager::getInstance().init();
     command::registerCommands();
     interaction::registerListeners();
+    liquid::registerListener();
 
     logger.info("TerritorySweeper 已启用。");
     return true;
 }
 
 bool Plugin::disable() {
+    liquid::unregisterListener();
     interaction::unregisterListeners();
     TaskManager::getInstance().shutdown();
     db::Database::getInstance().close();

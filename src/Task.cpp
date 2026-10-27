@@ -357,6 +357,22 @@ PendingBill const* TaskManager::billOfLand(int64_t landId) const {
     return nullptr;
 }
 
+bool TaskManager::isInsideActiveTask(int dimId, BlockPos const& pos) const {
+    for (auto const& task : mTasks) {
+        if (task.state != TaskState::Running) {
+            continue;
+        }
+        if (task.plan.dimId != dimId) {
+            continue;
+        }
+        if (pos.x >= task.plan.minX && pos.x <= task.plan.maxX && pos.z >= task.plan.minZ
+            && pos.z <= task.plan.maxZ && pos.y >= task.plan.minY && pos.y <= task.plan.maxY) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId) const {
     auto const& cfg = ConfigManager::getInstance().get();
 
@@ -664,70 +680,6 @@ void TaskManager::loadChunksForRange(BlockSource& source, int x0, int x1, int z0
     }
 }
 
-void TaskManager::cutBorderLiquids(SweepTask& task) {
-    auto const& cfg = ConfigManager::getInstance().get();
-
-    int const radius = std::clamp(cfg.liquidBorderRadius, 0, 16);
-    if (!cfg.cutLiquidBorder || radius <= 0) {
-        task.borderCutDone = true;
-        return;
-    }
-
-    BlockSource* source = blockSourceFor(task.plan.dimId);
-    Block const* airPtr = airBlockPtr();
-    if (!source || !airPtr) {
-        task.borderCutDone = true;
-        return;
-    }
-
-    // 环形带：选区外扩 radius 格，去掉选区矩形本身
-    int const x0 = task.plan.minX - radius;
-    int const x1 = task.plan.maxX + radius;
-    int const z0 = task.plan.minZ - radius;
-    int const z1 = task.plan.maxZ + radius;
-    int const y0 = task.plan.minY;
-    int const y1 = task.plan.maxY;
-
-    int64_t const ringW = (int64_t)(x1 - x0 + 1);
-    int64_t const ringD = (int64_t)(z1 - z0 + 1);
-    int64_t const total = ringW * ringD;
-
-    int64_t budget = std::max<int64_t>(1024, cfg.emptyScanBudget);
-
-    BlockChangeContext changeContext{};
-
-    while (task.borderCutCursor < total && budget > 0) {
-        int64_t const idx = task.borderCutCursor;
-
-        int const x = x0 + (int)(idx % ringW);
-        int const z = z0 + (int)(idx / ringW);
-
-        bool const inSelection = x >= task.plan.minX && x <= task.plan.maxX && z >= task.plan.minZ && z <= task.plan.maxZ;
-        if (!inSelection) {
-            for (int y = y0; y <= y1 && budget > 0; ++y) {
-                --budget;
-                BlockPos const pos{x, y, z};
-                if (BlockUtils::isLiquidSource(source->getBlock(pos))) {
-                    source->setBlock(pos, *airPtr, 3, nullptr, changeContext);
-                    ++task.borderCutCount;
-                }
-            }
-        }
-
-        ++task.borderCutCursor;
-    }
-
-    if (task.borderCutCursor >= total) {
-        task.borderCutDone = true;
-        log::get().info(
-            "任务 #{} 已切断 {} 个液体源（外扩 {} 格），防止清理后回灌。",
-            task.id,
-            task.borderCutCount,
-            radius
-        );
-    }
-}
-
 void TaskManager::clearUnit(SweepTask& task) {
     BlockSource* source = blockSourceFor(task.plan.dimId);
     if (!source) {
@@ -923,14 +875,6 @@ void TaskManager::stepTask(SweepTask& task) {
     }
 
     Player* owner = findOwner(task);
-
-    // 清理前先切断选区外圈的液体源（防止水/岩浆灌回），分片扫描，完成后才进入清理
-    if (!task.borderCutDone) {
-        cutBorderLiquids(task);
-        if (!task.borderCutDone) {
-            return; // 本 tick 用完了扫描预算，下一 tick 继续
-        }
-    }
 
     // 空分块 / 空层快进（内部处理换层与倒计时设置）
     advanceEmptyUnits(task);

@@ -109,9 +109,6 @@ struct SweepTask {
     bool    leavePaused{false};     ///< 是否因"离开领地/离线"而暂停（用于自动续跑）
     bool    layerHadWork{true};     ///< 当前层是否真的清过方块（空层不消耗倒计时）
     int     waitLoadedTicks{0};     ///< 当前分块等待区块加载的秒数（仅用于告警）
-    bool    borderCutDone{false};   ///< 选区外圈液体源是否已切割完成
-    int64_t borderCutCursor{0};     ///< 切割扫描游标（跨 tick 分片）
-    int     borderCutCount{0};      ///< 已切断的液体源数量
     int64_t paidAmount{0};
 
     [[nodiscard]] int  chunksPerLayer() const;
@@ -215,6 +212,9 @@ public:
     [[nodiscard]] PendingBill* billOfLand(int64_t landId);
     [[nodiscard]] PendingBill const* billOfLand(int64_t landId) const;
 
+    /// 该坐标是否落在某个"运行中"任务的清理范围内（液体拦截用）
+    [[nodiscard]] bool isInsideActiveTask(int dimId, BlockPos const& pos) const;
+
     /// 返回空串表示允许创建；否则为拒绝原因
     [[nodiscard]] std::string checkCreateAllowed(Player const& player, int64_t landId) const;
 
@@ -244,8 +244,6 @@ private:
     void            advanceEmptyUnits(SweepTask& task);
     /// 按每秒预算主动加载该水平范围覆盖的区块
     void            loadChunksForRange(BlockSource& source, int x0, int x1, int z0, int z1);
-    /// 切断选区外圈的液体源，防止清理后水/岩浆灌回（分片扫描）
-    void            cutBorderLiquids(SweepTask& task);
     /// 把离线期间暂存的退款发放给该玩家
     void            deliverPendingPayouts(Player& player);
     void            clearUnit(SweepTask& task);

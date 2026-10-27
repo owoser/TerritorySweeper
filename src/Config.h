@@ -80,10 +80,8 @@ struct Config {
     bool clearBedrock{true};
     /// 保留世界最底部的 N 层基岩
     int  preserveBottomLayers{1};
-    /// 清理前是否切断选区外圈的液体源（防止水/岩浆灌回）
-    bool cutLiquidBorder{true};
-    /// 切断液体源时向外扩展的格数
-    int  liquidBorderRadius{2};
+    /// 任务运行期间阻止液体流入清理区域
+    bool blockLiquidInflow{true};
 
     // ---- 价格阶梯（按面积从小到大）----
     std::vector<PriceLevel> priceLevels;

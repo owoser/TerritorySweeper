@@ -264,24 +264,26 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 未加载区块的 `getBlock()` 会返回空气，若不设防会把整片区域误判成"已清空"，
 导致进度瞬间跑满、退款算成 0。
 
-## 12. 流动水 / 岩浆回灌
+## 12. 液体流入拦截
 
-清出来的空腔会被选区外的液体灌满 —— 源头还在，吸水永远赶不上灌水。
+清理出来的空腔会被选区外的液体灌满 —— 源头还在，抽水永远赶不上灌水。
 
-解法：**开始清理前**，把选区边界外扩 `liquid_border_radius` 格这一圈内、
-覆盖整个任务 Y 范围的**液体源方块**切断：
+借鉴 PLand 的做法（`allowLiquidFlow`），在**任务运行期间拦截液体流入清理范围**：
 
 ```jsonc
-"cut_liquid_border": true,     // 是否切断外圈液体源
-"liquid_border_radius": 2,     // 外扩格数，0 = 不处理
+"block_liquid_inflow": true
 ```
 
-- 只挖**液体源**，流动水与其它方块一律不动，不会破坏周边建筑；
-- 源头消失后，已经流进来的水会自行退去；
-- 扫描按 `empty_scan_budget` 分片，几 tick 内完成，不产生卡顿尖峰；
-- 完成后日志输出：`任务 #N 已切断 12 个液体源（外扩 2 格）`。
+- 液体（水 / 岩浆，源与流动水都算）被放进**运行中任务**的清理范围时，立即还原成空气；
+- 任务暂停/结束后不再拦截，水恢复正常流动；
+- 不修改选区外的任何方块（不像"切断外圈水源"那样破坏别人的池子/河流）；
+- 全局开关，关闭后行为回到原版（会被灌水）。
 
-若河流源头在半径之外仍会倒灌，把 `liquid_border_radius` 调大（建议不超过 4）。
+> 实现说明：LeviLamina 本体没有"液体流动前"事件，PLand 是通过第三方事件库
+> iListenAttentively 的 `LiquidFlowEvent` 事前取消。该库依赖的 LeviLamina 源码包
+> 在本机构建失败（`CommandRegistry` 不完整类型），所以这里改用 LL 自带的
+> `BlockChangedEvent` **事后还原**：功能一致，代价是液体可能闪一帧。
+> 若之后 iListenAttentively 能正常安装，只需替换 `LiquidGuard` 的监听实现，配置与行为不变。
 
 ## 13. 区块加载与基岩策略
 
