@@ -891,6 +891,11 @@ void TaskManager::clearUnit(SweepTask& task, int64_t& budget) {
                     // updateFlags = 2: 仅向客户端发包同步，不广播邻居物理连锁更新，避免大量连锁掉帧
                     source->setBlock(pos, air, 2, nullptr, changeContext);
 
+                    auto const& extra = source->getExtraBlock(pos);
+                    if (!extra.isAir()) {
+                        source->setExtraBlock(pos, air, 2);
+                    }
+
                     if (isBedrock) {
                         if (task.bedrockRemovedInLayer == 0 || y < task.lowestBedrockRemovedY) {
                             task.lowestBedrockRemovedY = y;
@@ -1011,10 +1016,11 @@ void TaskManager::runFinalSweep(SweepTask& task, int64_t& globalBudget) {
 
             // O(1) 块级粗筛：如果整个 SubChunk 是纯空气，直接跳过！
             if (!isSubChunkUniformAir(*source, samplePos, *airPtr)) {
-                // 非纯空气（可能残留方块或水），对相交区域精细清理
-                for (int x = boxX0; x <= boxX1 && globalBudget > 0 && scanBudget > 0; ++x) {
-                    for (int z = boxZ0; z <= boxZ1 && globalBudget > 0 && scanBudget > 0; ++z) {
-                        for (int y = boxY0; y <= boxY1 && globalBudget > 0 && scanBudget > 0; ++y) {
+                // 非纯空气（含有残留水或方块）：完整清空当前 SubChunk（最多4096格，耗时<0.1ms），
+                // 确保绝不把单个 SubChunk 扫到一半就跳到下一个造成遗漏
+                for (int x = boxX0; x <= boxX1; ++x) {
+                    for (int z = boxZ0; z <= boxZ1; ++z) {
+                        for (int y = boxY0; y <= boxY1; ++y) {
                             --scanBudget;
                             BlockPos const pos{x, y, z};
                             auto const& block = source->getBlock(pos);
@@ -1033,6 +1039,12 @@ void TaskManager::runFinalSweep(SweepTask& task, int64_t& globalBudget) {
                                     task.dirty = true;
                                     --globalBudget;
                                 }
+                            }
+                            auto const& extra = source->getExtraBlock(pos);
+                            if (!extra.isAir()) {
+                                source->setExtraBlock(pos, *airPtr, 2);
+                                ++task.finalRemoved;
+                                task.dirty = true;
                             }
                         }
                     }
@@ -1089,6 +1101,12 @@ void TaskManager::runFinalSweep(SweepTask& task, int64_t& globalBudget) {
                 task.dirty = true;
                 --globalBudget;
             }
+        }
+        auto const& extra = source->getExtraBlock(pos);
+        if (!extra.isAir()) {
+            source->setExtraBlock(pos, *airPtr, 2);
+            ++task.finalRemoved;
+            task.dirty = true;
         }
 
         ++task.finalCursor;
@@ -1573,13 +1591,20 @@ bool isSubChunkUniformAir(BlockSource& source, BlockPos const& pos, Block const&
         return false;
     }
 
-    int const subYIndex = (pos.y - lc->mMin->y) >> 4;
-    auto const& subchunks = lc->mSubChunks.get();
-    if (subYIndex < 0 || subYIndex >= static_cast<int>(subchunks.size())) {
-        return false;
+    // pos.y >> 4 精准计算 SubChunk 绝对索引（主世界为 -4 ~ 19）
+    signed char const targetAbs = static_cast<signed char>(pos.y >> 4);
+    auto const&       subchunks = lc->mSubChunks.get();
+
+    for (auto const& sc : subchunks) {
+        if (sc.mAbsoluteIndex == targetAbs) {
+            if (sc.mBlocksReadPtr[0] == nullptr) {
+                return false;
+            }
+            return sc.isUniform(air);
+        }
     }
 
-    return subchunks[static_cast<size_t>(subYIndex)].isUniform(air);
+    return false; // 未匹配到时保守返回 false，走精细方块扫描，零误判
 }
 
 bool isChunkEmptyAtLayer(
