@@ -22,6 +22,3 @@
 AGENT.md
 AGENT*.md
 
-# Local unreleased changelog (tracked locally, do not push)
-UNRELEASED.md
-UNRELEASED*.md
