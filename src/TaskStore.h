@@ -25,6 +25,7 @@ std::vector<SweepTask> loadTasks();
 std::vector<PendingBill> loadBills();
 
 bool upsertTask(SweepTask const& task);
+bool flushDirtyTasks(std::vector<SweepTask>& tasks);
 bool upsertBill(PendingBill const& bill);
 
 bool deleteTask(uint64_t id);

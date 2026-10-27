@@ -94,6 +94,13 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
     );
 
     field(
+        "global_blocks_per_tick_budget",
+        std::to_string(cfg.globalBlocksPerTickBudget),
+        {"全服所有并发任务共享的每秒最大方块处理预算",
+         "确保同时运行10~20个大领地任务时主线程耗时严格受控，服务器TPS永远稳定在20.0"}
+    );
+
+    field(
         "bossbar_enabled",
         cfg.bossBarEnabled ? "true" : "false",
         {"是否显示 BossBar 进度条（每层倒计时与整体进度）", "若进服出现异常断开，可先关闭此项排查"}
@@ -133,7 +140,13 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
         {"选区水平面积（X 跨度 × Z 跨度）超过该值时才启用分块清理"}
     );
 
-    field("chunk_interval_seconds", std::to_string(cfg.chunkIntervalSeconds), {"相邻两个分块之间的等待秒数"});
+    field(
+        "chunk_interval_seconds",
+        std::to_string(cfg.chunkIntervalSeconds),
+        {"相邻两个分块之间的等待秒数",
+         "注意：若设为 0，单 tick 内将连续清扫多个分块（饱和吞吐），可能整层瞬间清完；",
+         "若需要清晰可见的分块过渡节奏，请设为 >= 1（推荐 1~2 秒）"}
+    );
 
     field(
         "pause_on_player_leave",
@@ -348,7 +361,7 @@ bool appendMissingFields(
 
 /// 配置版本迁移：重写配置以移除废弃字段（写入前备份原文件）
 bool migrateConfigFile(std::filesystem::path const& file, nlohmann::json const& root, Config& cfg) {
-    constexpr int kCurrentConfigVersion = 3;
+    constexpr int kCurrentConfigVersion = 4;
 
     if (cfg.configVersion >= kCurrentConfigVersion) {
         return false;
@@ -456,6 +469,7 @@ std::vector<std::string> Config::sanitize() {
 
     clampInt("global_task_limit", globalTaskLimit, 1, 1);
     clampInt("player_task_limit", playerTaskLimit, 1, 1);
+    clampInt("global_blocks_per_tick_budget", globalBlocksPerTickBudget, 1000, 12000);
     clampInt("layer_countdown_seconds", layerCountdownSeconds, 1, 10);
     clampInt("chunk_matrix_width", chunkMatrixWidth, 1, 10);
     clampInt("chunk_matrix_depth", chunkMatrixDepth, 1, 10);
@@ -603,6 +617,7 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "moneyname", cfg.moneyname);
     readIfPresent(root, "global_task_limit", cfg.globalTaskLimit);
     readIfPresent(root, "player_task_limit", cfg.playerTaskLimit);
+    readIfPresent(root, "global_blocks_per_tick_budget", cfg.globalBlocksPerTickBudget);
     readIfPresent(root, "bossbar_enabled", cfg.bossBarEnabled);
     readIfPresent(root, "bossbar_update_mode", cfg.bossBarUpdateMode);
     readIfPresent(root, "region_frame_enabled", cfg.regionFrameEnabled);

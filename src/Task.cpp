@@ -421,7 +421,42 @@ PendingBill const* TaskManager::billOfLand(int64_t landId) const {
     return nullptr;
 }
 
+void TaskManager::rebuildActiveChunkGrid() {
+    mActiveChunkKeys.clear();
+    for (auto const& task : mTasks) {
+        if (task.state != TaskState::Running && task.state != TaskState::Paused) {
+            continue;
+        }
+        int const minCx = task.plan.minX >> 4;
+        int const maxCx = task.plan.maxX >> 4;
+        int const minCz = task.plan.minZ >> 4;
+        int const maxCz = task.plan.maxZ >> 4;
+        uint64_t const dimPart = (static_cast<uint64_t>(task.plan.dimId)) << 48;
+
+        for (int cx = minCx; cx <= maxCx; ++cx) {
+            for (int cz = minCz; cz <= maxCz; ++cz) {
+                uint64_t const key = dimPart
+                                   | ((static_cast<uint64_t>(cx) & 0xFFFFFFULL) << 24)
+                                   | (static_cast<uint64_t>(cz) & 0xFFFFFFULL);
+                mActiveChunkKeys.insert(key);
+            }
+        }
+    }
+}
+
 bool TaskManager::isInsideActiveTask(int dimId, BlockPos const& pos) const {
+    if (mActiveChunkKeys.empty()) {
+        return false;
+    }
+    int const cx = pos.x >> 4;
+    int const cz = pos.z >> 4;
+    uint64_t const key = ((static_cast<uint64_t>(dimId)) << 48)
+                       | ((static_cast<uint64_t>(cx) & 0xFFFFFFULL) << 24)
+                       | (static_cast<uint64_t>(cz) & 0xFFFFFFULL);
+    if (mActiveChunkKeys.find(key) == mActiveChunkKeys.end()) {
+        return false; // O(1) 立即短路！绝大多数水流不在任务区块内，直接退出
+    }
+
     for (auto const& task : mTasks) {
         // 运行中与已暂停都算"仍在使用该区域"；任务结束/终止后会被移出列表，拦截自然失效
         if (task.state != TaskState::Running && task.state != TaskState::Paused) {
@@ -517,7 +552,9 @@ SweepTask* TaskManager::startTask(Player& player, SweepPlan plan, bool alreadyPa
     mTasks.push_back(std::move(task));
 
     auto* created = &mTasks.back();
+    created->dirty = true;
     db::upsertTask(*created);
+    rebuildActiveChunkGrid();
     db::setMetaInt("next_task_id", (int64_t)mNextId);
     log::get().info(
         "任务 #{} 已创建：领主={} 领地={} 范围={}x{} 层数={} 方向={} 分块={} 费用={}",
@@ -551,7 +588,9 @@ void TaskManager::pauseTask(uint64_t id, std::string const& reason) {
         owner->sendMessage("§e[领地清扫] 任务已暂停：" + reason);
     }
     log::get().info("任务 #{} 已暂停：{}", id, reason);
+    task->dirty = true;
     db::upsertTask(*task);
+    rebuildActiveChunkGrid();
 }
 
 bool TaskManager::resumeTask(uint64_t id) {
@@ -567,7 +606,9 @@ bool TaskManager::resumeTask(uint64_t id) {
         updateBossBar(*task, *owner);
         owner->sendMessage("§a[领地清扫] 任务已继续。");
     }
+    task->dirty = true;
     db::upsertTask(*task);
+    rebuildActiveChunkGrid();
     return true;
 }
 
@@ -584,6 +625,7 @@ void TaskManager::finishTask(uint64_t id) {
     log::get().info("任务 #{} 已完成。", id);
     std::erase_if(mTasks, [&](SweepTask const& t) { return t.id == id; });
     db::deleteTask(id);
+    rebuildActiveChunkGrid();
 }
 
 void TaskManager::killTask(uint64_t id, std::string const& reason) {
@@ -613,6 +655,7 @@ void TaskManager::killTask(uint64_t id, std::string const& reason) {
     log::get().info("任务 #{} 已终止：{}（退款 {}）", id, reason, refunded);
     std::erase_if(mTasks, [&](SweepTask const& t) { return t.id == id; });
     db::deleteTask(id);
+    rebuildActiveChunkGrid();
 }
 
 void TaskManager::updateBossBar(SweepTask& task, Player& player) {
@@ -700,6 +743,7 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
         title   = "§e[领地清扫] §f收尾清理 §7| §a进度 " + percentText(pct);
     } else if (info.phase == BarPhase::Paused) {
         title = "§c[领地清扫] §f任务已暂停 §7| §c释放倒计时 " + std::to_string(remain) + "s";
+        title += " §7| §a进度 " + percentText(task.progressPercent());
     } else {
         title = "§e[领地清扫] §f第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层";
 
@@ -714,9 +758,9 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
         } else {
             title += " §7| §a清理中";
         }
-    }
 
-    title += " §7| §a进度 " + percentText(task.progressPercent());
+        title += " §7| §a进度 " + percentText(task.progressPercent());
+    }
 
 
     if (!task.bossShown) {
@@ -767,7 +811,10 @@ void TaskManager::loadChunksForRange(BlockSource& source, int x0, int x1, int z0
     }
 }
 
-void TaskManager::clearUnit(SweepTask& task) {
+void TaskManager::clearUnit(SweepTask& task, int64_t& budget) {
+    if (budget <= 0) {
+        return;
+    }
     BlockSource* source = blockSourceFor(task.plan.dimId);
     if (!source) {
         return;
@@ -864,7 +911,11 @@ void TaskManager::clearUnit(SweepTask& task) {
             }
 
             ++task.cursor;
-            if (++processed >= kBlocksPerTickBudget) {
+            task.dirty = true;
+            ++processed;
+            --budget;
+
+            if (budget <= 0 || processed >= kBlocksPerTickBudget) {
                 finished = false;
                 break;
             }
@@ -878,28 +929,45 @@ void TaskManager::clearUnit(SweepTask& task) {
     if (finished) {
         ++task.chunkIndex;
         task.cursor = 0;
+        task.dirty  = true;
         if (task.plan.chunked) {
             task.chunkCooldown = std::max(0, task.plan.chunkInterval);
         }
     }
 }
 
-void TaskManager::runFinalSweep(SweepTask& task) {
+void TaskManager::runFinalSweep(SweepTask& task, int64_t& globalBudget) {
     auto const& cfg = ConfigManager::getInstance().get();
 
     if (!cfg.finalSweep) {
         task.finalSweepDone = true;
+        task.dirty          = true;
+        return;
+    }
+
+    if (globalBudget <= 0) {
         return;
     }
 
     BlockSource* source = blockSourceFor(task.plan.dimId);
     Block const* airPtr = airBlockPtr();
     if (!source || !airPtr) {
-        task.finalizing = true; // 维度暂不可用，下一 tick 再试
+        task.finalizing = true;
         return;
     }
 
     task.finalizing = true;
+    task.dirty      = true;
+
+    // 水平区块一次性预加载，避免在 144 次 SubChunk 循环中重复限流卡顿！
+    BlockPos const selMin{task.plan.minX, task.plan.minY, task.plan.minZ};
+    BlockPos const selMax{task.plan.maxX, task.plan.maxY, task.plan.maxZ};
+    if (!isRegionLoaded(*source, selMin, selMax)) {
+        loadChunksForRange(*source, task.plan.minX, task.plan.maxX, task.plan.minZ, task.plan.maxZ);
+        if (!isRegionLoaded(*source, selMin, selMax)) {
+            return; // 区块未完全加载，等待加载
+        }
+    }
 
     int const minX = task.plan.minX;
     int const maxX = task.plan.maxX;
@@ -922,10 +990,10 @@ void TaskManager::runFinalSweep(SweepTask& task) {
 
     // 当开启 SubChunk 粗筛时，按 SubChunk 步长推进
     if (cfg.subchunkCulling) {
-        int64_t budget = kBlocksPerTickBudget;
+        int64_t scanBudget = 131072; // 内存读取上限 13 万格（几毫秒即可完成）
         BlockChangeContext context{};
 
-        while (task.finalCursor < totalSubChunks && budget > 0) {
+        while (task.finalCursor < totalSubChunks && globalBudget > 0 && scanBudget > 0) {
             int64_t const subIdx = task.finalCursor;
 
             int const sx = minSubX + static_cast<int>(subIdx % subCountX);
@@ -941,22 +1009,13 @@ void TaskManager::runFinalSweep(SweepTask& task) {
 
             BlockPos const samplePos{boxX0, boxY0, boxZ0};
 
-            // 检查对应区块是否完全加载
-            if (!isRegionLoaded(*source, BlockPos{boxX0, boxY0, boxZ0}, BlockPos{boxX1, boxY1, boxZ1})) {
-                loadChunksForRange(*source, boxX0, boxX1, boxZ0, boxZ1);
-                if (!isRegionLoaded(*source, BlockPos{boxX0, boxY0, boxZ0}, BlockPos{boxX1, boxY1, boxZ1})) {
-                    // 区块未加载：等待下个 tick 再扫描该 SubChunk
-                    return;
-                }
-            }
-
             // O(1) 块级粗筛：如果整个 SubChunk 是纯空气，直接跳过！
             if (!isSubChunkUniformAir(*source, samplePos, *airPtr)) {
                 // 非纯空气（可能残留方块或水），对相交区域精细清理
-                for (int x = boxX0; x <= boxX1; ++x) {
-                    for (int z = boxZ0; z <= boxZ1; ++z) {
-                        for (int y = boxY0; y <= boxY1; ++y) {
-                            --budget;
+                for (int x = boxX0; x <= boxX1 && globalBudget > 0 && scanBudget > 0; ++x) {
+                    for (int z = boxZ0; z <= boxZ1 && globalBudget > 0 && scanBudget > 0; ++z) {
+                        for (int y = boxY0; y <= boxY1 && globalBudget > 0 && scanBudget > 0; ++y) {
+                            --scanBudget;
                             BlockPos const pos{x, y, z};
                             auto const& block = source->getBlock(pos);
                             if (!block.isAir() && !isProtectedBlock(block, y, task.plan.dimId)) {
@@ -971,6 +1030,8 @@ void TaskManager::runFinalSweep(SweepTask& task) {
                                 } else {
                                     source->setBlock(pos, *airPtr, 2, nullptr, context);
                                     ++task.finalRemoved;
+                                    task.dirty = true;
+                                    --globalBudget;
                                 }
                             }
                         }
@@ -979,11 +1040,13 @@ void TaskManager::runFinalSweep(SweepTask& task) {
             }
 
             ++task.finalCursor;
+            task.dirty = true;
         }
 
         if (task.finalCursor >= totalSubChunks) {
             task.finalizing      = false;
             task.finalSweepDone  = true;
+            task.dirty           = true;
             log::get().info("任务 #{} 终检完成（SubChunk 粗筛模式），清除残留方块 {} 块。", task.id, task.finalRemoved);
         }
         return;
@@ -995,17 +1058,17 @@ void TaskManager::runFinalSweep(SweepTask& task) {
     int64_t const h = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
     int64_t const total = w * d * h;
 
-    int64_t          budget = kBlocksPerTickBudget;
+    int64_t scanBudget = 131072;
     BlockChangeContext context{};
 
-    while (task.finalCursor < total && budget > 0) {
+    while (task.finalCursor < total && globalBudget > 0 && scanBudget > 0) {
         int64_t const idx = task.finalCursor;
 
         int const x = task.plan.minX + (int)(idx % w);
         int const z = task.plan.minZ + (int)((idx / w) % d);
         int const y = task.plan.minY + (int)(idx / (w * d));
 
-        --budget;
+        --scanBudget;
 
         BlockPos const pos{x, y, z};
         auto const&    block = source->getBlock(pos);
@@ -1023,15 +1086,19 @@ void TaskManager::runFinalSweep(SweepTask& task) {
             } else {
                 source->setBlock(pos, *airPtr, 2, nullptr, context);
                 ++task.finalRemoved;
+                task.dirty = true;
+                --globalBudget;
             }
         }
 
         ++task.finalCursor;
+        task.dirty = true;
     }
 
     if (task.finalCursor >= total) {
         task.finalizing      = false;
         task.finalSweepDone  = true;
+        task.dirty           = true;
         log::get().info("任务 #{} 终检完成（逐格扫描模式），清除残留方块 {} 块。", task.id, task.finalRemoved);
     }
 }
@@ -1117,6 +1184,7 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
     }
 
     if (skippedChunks > 0 || skippedLayers > 0) {
+        task.dirty = true;
         TS_DBG("[task] #{} 跳过 {} 个空分块 / {} 个空层", task.id, skippedChunks, skippedLayers);
     }
 
@@ -1132,19 +1200,18 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
     }
 }
 
-void TaskManager::stepTask(SweepTask& task) {
+void TaskManager::stepTask(SweepTask& task, int64_t& globalBudget) {
     Player* owner = findOwner(task);
 
     // 所有层清完后先做终检清扫，再结算（清除清理期间残留的液体/方块）
     auto completeWithFinalSweep = [&]() -> bool {
         if (!task.finalSweepDone) {
-            runFinalSweep(task);
+            runFinalSweep(task, globalBudget);
         }
         if (!task.finalSweepDone) {
             if (owner) {
                 updateBossBar(task, *owner);
             }
-            db::upsertTask(task);
             return false;
         }
         finishTask(task.id);
@@ -1165,6 +1232,7 @@ void TaskManager::stepTask(SweepTask& task) {
 
     if (task.countdown > 0) {
         --task.countdown;
+        task.dirty = true;
         if (owner) {
             updateBossBar(task, *owner);
         }
@@ -1173,6 +1241,7 @@ void TaskManager::stepTask(SweepTask& task) {
 
     if (task.chunkCooldown > 0) {
         --task.chunkCooldown;
+        task.dirty = true;
         if (owner) {
             updateBossBar(task, *owner);
         }
@@ -1197,12 +1266,12 @@ void TaskManager::stepTask(SweepTask& task) {
         return;
     }
 
-    clearUnit(task);
+    clearUnit(task, globalBudget);
 
     // 预算饱和推进：如果分块无需等待冷却且本层还有后续分块，连续清扫，避免浪费整秒
-    while (task.chunkCooldown <= 0 && task.chunkIndex < task.chunksPerLayer() && !task.finished()) {
+    while (task.chunkCooldown <= 0 && task.chunkIndex < task.chunksPerLayer() && !task.finished() && globalBudget > 0) {
         int const prevChunk = task.chunkIndex;
-        clearUnit(task);
+        clearUnit(task, globalBudget);
         if (task.chunkIndex == prevChunk) {
             break; // 未推进（可能是分块内部跨预算分段，或等待区块加载），退出循环
         }
@@ -1211,7 +1280,6 @@ void TaskManager::stepTask(SweepTask& task) {
     if (owner) {
         updateBossBar(task, *owner);
     }
-    db::upsertTask(task);
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,11 +1289,15 @@ void TaskManager::stepTask(SweepTask& task) {
 void TaskManager::tick() {
     auto const& cfg = ConfigManager::getInstance().get();
 
-    // 每秒重置区块加载预算
+    // 每秒重置区块加载预算与全局方块清理预算池
     mChunkLoadBudget = std::max(0, cfg.chunkLoadBudget);
+    int64_t globalBudget = std::max<int64_t>(1000, cfg.globalBlocksPerTickBudget);
+
+    rebuildActiveChunkGrid();
 
     std::vector<uint64_t> toKill;
 
+    // 第一阶段：看门狗与状态维护
     for (auto& task : mTasks) {
         Player* owner = findOwner(task);
 
@@ -1311,20 +1383,33 @@ void TaskManager::tick() {
                 updateBossBar(task, *owner);
             }
 
-            // 每 5 秒落库一次，重启后可续走倒计时（崩溃最多丢 5 秒）
+            // 每 5 秒标记 dirty，由批事务持久化续走倒计时（崩溃最多丢 5 秒）
             if (task.pausedSeconds % 5 == 0) {
-                db::upsertTask(task);
+                task.dirty = true;
             }
             continue;
         }
 
         task.leavePaused = false;
-        stepTask(task);
     }
 
     for (auto id : toKill) {
         killTask(id, "暂停超时（" + std::to_string(cfg.pauseAutoCancelSeconds) + " 秒未继续）");
     }
+
+    // 第二阶段：公平轮转推进运行中的任务，受 globalBudget 严格锁死
+    size_t const taskCount = mTasks.size();
+    if (taskCount > 0 && globalBudget > 0) {
+        for (size_t i = 0; i < taskCount && globalBudget > 0; ++i) {
+            auto& task = mTasks[i];
+            if (task.state == TaskState::Running) {
+                stepTask(task, globalBudget);
+            }
+        }
+    }
+
+    // 第三阶段：批量单事务提交所有 dirty 任务到 SQLite（极大降低磁盘 I/O）
+    db::flushDirtyTasks(mTasks);
 }
 
 // ---------------------------------------------------------------------------
@@ -1685,6 +1770,7 @@ void TaskManager::loadState() {
             mTasks.size()
         );
     }
+    rebuildActiveChunkGrid();
 }
 
 /// 按未完成工作量比例退款；返回实际到账金额（失败为 0）

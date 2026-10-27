@@ -20,7 +20,7 @@ struct PriceLevel {
  * 所有字段名与 config.json 中的键一一对应，缺省值即为默认配置。
  */
 struct Config {
-    int configVersion{3};
+    int configVersion{4};
 
     /// 调试模式：输出发包、任务推进、交互等详细日志（排查用，平时保持 false）
     bool debugEnabled{false};
@@ -33,6 +33,8 @@ struct Config {
     // ---- 任务并发 ----
     int globalTaskLimit{3};
     int playerTaskLimit{1};
+    /// 全服所有并发任务共享的每秒最大方块处理预算（确保超多任务时 TPS 稳定）
+    int globalBlocksPerTickBudget{12000};
 
     // ---- 显示 ----
     /// BossBar 进度条（BossEvent + AddActor 假实体）。进服异常时可用它快速排查。

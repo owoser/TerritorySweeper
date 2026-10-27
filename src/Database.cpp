@@ -28,9 +28,17 @@ Statement::Statement(sqlite3* db, std::string_view sql, char const* tag) : mDb(d
     }
 }
 
+Statement::Statement(sqlite3* db, sqlite3_stmt* stmt, bool isCached, char const* tag)
+: mDb(db), mStmt(stmt), mCached(isCached), mTag(tag ? tag : "cached_stmt") {}
+
 Statement::~Statement() {
     if (mStmt) {
-        sqlite3_finalize(mStmt);
+        if (mCached) {
+            sqlite3_reset(mStmt);
+            sqlite3_clear_bindings(mStmt);
+        } else {
+            sqlite3_finalize(mStmt);
+        }
         mStmt = nullptr;
     }
 }
@@ -38,18 +46,38 @@ Statement::~Statement() {
 Statement::Statement(Statement&& other) noexcept
 : mDb(std::exchange(other.mDb, nullptr)),
   mStmt(std::exchange(other.mStmt, nullptr)),
+  mCached(std::exchange(other.mCached, false)),
   mTag(std::exchange(other.mTag, "")) {}
 
 Statement& Statement::operator=(Statement&& other) noexcept {
     if (this != &other) {
         if (mStmt) {
-            sqlite3_finalize(mStmt);
+            if (mCached) {
+                sqlite3_reset(mStmt);
+                sqlite3_clear_bindings(mStmt);
+            } else {
+                sqlite3_finalize(mStmt);
+            }
         }
-        mDb   = std::exchange(other.mDb, nullptr);
-        mStmt = std::exchange(other.mStmt, nullptr);
-        mTag  = std::exchange(other.mTag, "");
+        mDb     = std::exchange(other.mDb, nullptr);
+        mStmt   = std::exchange(other.mStmt, nullptr);
+        mCached = std::exchange(other.mCached, false);
+        mTag    = std::exchange(other.mTag, "");
     }
     return *this;
+}
+
+Statement Statement::cached(sqlite3* db, std::string_view sql, char const* tag) {
+    if (!db) {
+        return Statement{};
+    }
+    sqlite3_stmt* stmt = Database::getInstance().getCachedStmt(sql, tag);
+    if (!stmt) {
+        return Statement{};
+    }
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return Statement(db, stmt, true, tag);
 }
 
 bool Statement::bind(int index, int64_t value) {
@@ -167,20 +195,51 @@ bool Database::open(std::filesystem::path const& file) {
 
     sqlite3_busy_timeout(mDb, 3000);
 
-    if (!exec("PRAGMA journal_mode=WAL;", "pragma:wal") || !exec("PRAGMA synchronous=NORMAL;", "pragma:sync")
-        || !exec("PRAGMA foreign_keys=ON;", "pragma:fk")) {
-        log::get().warn("数据库 PRAGMA 设置未完全成功，继续使用默认行为。");
-    }
+    exec("PRAGMA journal_mode=WAL;", "pragma:wal");
+    exec("PRAGMA synchronous=NORMAL;", "pragma:sync");
+    exec("PRAGMA foreign_keys=ON;", "pragma:fk");
+    exec("PRAGMA mmap_size=268435456;", "pragma:mmap");      // 256MB 内存映射 I/O
+    exec("PRAGMA cache_size=-16000;", "pragma:cache");        // 16MB 内存页缓存
+    exec("PRAGMA temp_store=MEMORY;", "pragma:temp");         // 临时表与排序在内存处理
+    exec("PRAGMA wal_autocheckpoint=1000;", "pragma:wal_ckpt");
 
     log::get().info("数据库已打开: {}", mPath.string());
     return true;
 }
 
 void Database::close() {
+    clearCachedStmts();
     if (mDb) {
         sqlite3_close(mDb);
         mDb = nullptr;
     }
+}
+
+sqlite3_stmt* Database::getCachedStmt(std::string_view sql, char const* tag) {
+    if (!mDb) {
+        return nullptr;
+    }
+    std::string key{sql};
+    auto it = mStmtCache.find(key);
+    if (it != mStmtCache.end()) {
+        return it->second;
+    }
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(mDb, key.c_str(), static_cast<int>(key.size()), &stmt, nullptr) != SQLITE_OK) {
+        log::get().error("SQL 预编译缓存失败 [{}]: {}", tag ? tag : "cached_stmt", sqlite3_errmsg(mDb));
+        return nullptr;
+    }
+    mStmtCache.emplace(std::move(key), stmt);
+    return stmt;
+}
+
+void Database::clearCachedStmts() {
+    for (auto& [sql, stmt] : mStmtCache) {
+        if (stmt) {
+            sqlite3_finalize(stmt);
+        }
+    }
+    mStmtCache.clear();
 }
 
 bool Database::exec(std::string_view sql, char const* tag) {

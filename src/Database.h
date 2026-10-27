@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 struct sqlite3;
 struct sqlite3_stmt;
@@ -24,7 +25,11 @@ class Statement {
 public:
     Statement() = default;
     Statement(sqlite3* db, std::string_view sql, char const* tag);
+    Statement(sqlite3* db, sqlite3_stmt* stmt, bool isCached, char const* tag);
     ~Statement();
+
+    /// 从数据库连接的预编译缓存池中借用语句；生命周期结束时自动 reset，不调用 finalize
+    static Statement cached(sqlite3* db, std::string_view sql, char const* tag);
 
     Statement(Statement&& other) noexcept;
     Statement& operator=(Statement&& other) noexcept;
@@ -52,6 +57,7 @@ public:
 private:
     sqlite3*      mDb{nullptr};
     sqlite3_stmt* mStmt{nullptr};
+    bool          mCached{false};
     char const*   mTag{""};
 };
 
@@ -74,11 +80,16 @@ public:
 
     [[nodiscard]] int64_t lastInsertRowId() const;
 
+    /// 获取或编译常驻内存的 sqlite3_stmt
+    sqlite3_stmt* getCachedStmt(std::string_view sql, char const* tag = "cached_stmt");
+    void          clearCachedStmts();
+
 private:
     Database() = default;
 
-    sqlite3*              mDb{nullptr};
-    std::filesystem::path mPath;
+    sqlite3*                                       mDb{nullptr};
+    std::filesystem::path                          mPath;
+    std::unordered_map<std::string, sqlite3_stmt*> mStmtCache;
 };
 
 /// 全局互斥量：保证多入口（tick / 表单 / 指令）不会并发访问同一连接

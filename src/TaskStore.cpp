@@ -469,7 +469,7 @@ bool upsertTask(SweepTask const& task) {
     static std::string const kSql = buildUpsertSql("tasks", kTaskColumns, "id");
 
     std::lock_guard lock(mutex());
-    Statement       st{database.raw(), kSql, "tasks:upsert"};
+    Statement       st = Statement::cached(database.raw(), kSql, "tasks:upsert");
     if (!st.valid()) {
         return false;
     }
@@ -492,13 +492,69 @@ bool upsertTask(SweepTask const& task) {
     return st.execute();
 }
 
+bool flushDirtyTasks(std::vector<SweepTask>& tasks) {
+    auto& database = Database::getInstance();
+    if (!database.ok() || tasks.empty()) {
+        return false;
+    }
+
+    bool hasDirty = false;
+    for (auto const& t : tasks) {
+        if (t.dirty) {
+            hasDirty = true;
+            break;
+        }
+    }
+    if (!hasDirty) {
+        return true;
+    }
+
+    static std::string const kSql = buildUpsertSql("tasks", kTaskColumns, "id");
+
+    std::lock_guard lock(mutex());
+    database.begin();
+
+    for (auto& task : tasks) {
+        if (!task.dirty) {
+            continue;
+        }
+        Statement st = Statement::cached(database.raw(), kSql, "tasks:upsert_batch");
+        if (!st.valid()) {
+            database.rollback();
+            return false;
+        }
+
+        st.bind(1, (int64_t)task.id);
+        st.bind(2, task.ownerName);
+        st.bind(3, task.ownerXuid);
+        st.bind(4, task.ownerUuid.asString());
+        st.bind(5, (int64_t)task.state);
+        st.bind(6, (int64_t)task.layersDone);
+        st.bind(7, (int64_t)task.countdown);
+        st.bind(8, (int64_t)task.chunkIndex);
+        st.bind(9, (int64_t)task.chunkCooldown);
+        st.bind(10, task.cursor);
+        st.bind(11, (int64_t)task.pausedSeconds);
+        st.bind(12, task.paidAmount);
+        bindPlan(st, kTaskPlanBase + 1, task.plan, true);
+        st.bind(kTaskPlanBase + 1 + kPlanColumnCount, nowSeconds());
+
+        if (st.execute()) {
+            task.dirty = false;
+        }
+    }
+
+    return database.commit();
+}
+
 bool deleteTask(uint64_t id) {
     auto& database = Database::getInstance();
     if (!database.ok()) {
         return false;
     }
+    static std::string const kDeleteSql = "DELETE FROM tasks WHERE id = ?;";
     std::lock_guard lock(mutex());
-    Statement       st{database.raw(), "DELETE FROM tasks WHERE id = ?;", "tasks:delete"};
+    Statement       st = Statement::cached(database.raw(), kDeleteSql, "tasks:delete");
     if (!st.valid()) {
         return false;
     }
@@ -643,13 +699,12 @@ bool insertPendingPayout(PendingPayout const& payout) {
         return false;
     }
 
-    Statement st{
-        database.raw(),
+    static std::string const kInsertPayoutSql =
         "INSERT INTO pending_payouts "
         "(owner_uuid, owner_name, owner_xuid, amount, reason, task_id, created_at, paid) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 0);",
-        "payout:insert"
-    };
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0);";
+    std::lock_guard lock(mutex());
+    Statement st = Statement::cached(database.raw(), kInsertPayoutSql, "payout:insert");
     if (!st.valid()) {
         return false;
     }
@@ -705,7 +760,9 @@ bool markPayoutPaid(int64_t id) {
         return false;
     }
 
-    Statement st{database.raw(), "UPDATE pending_payouts SET paid = 1 WHERE id = ?;", "payout:paid"};
+    static std::string const kMarkPaidSql = "UPDATE pending_payouts SET paid = 1 WHERE id = ?;";
+    std::lock_guard lock(mutex());
+    Statement st = Statement::cached(database.raw(), kMarkPaidSql, "payout:paid");
     if (!st.valid()) {
         return false;
     }
@@ -726,13 +783,11 @@ bool recordRefund(
         return false;
     }
 
-    std::lock_guard lock(mutex());
-    Statement       st{
-        database.raw(),
+    static std::string const kRefundSql =
         "INSERT INTO refunds (task_id, owner_name, owner_xuid, amount, progress, reason, created_at) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?);",
-        "refunds:insert"
-    };
+        "VALUES (?, ?, ?, ?, ?, ?, ?);";
+    std::lock_guard lock(mutex());
+    Statement st = Statement::cached(database.raw(), kRefundSql, "refunds:insert");
     if (!st.valid()) {
         return false;
     }

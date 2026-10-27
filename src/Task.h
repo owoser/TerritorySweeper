@@ -23,6 +23,7 @@ class Block;
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 class Player;
@@ -117,6 +118,7 @@ struct SweepTask {
     bool    finalSweepDone{false};    ///< 终检是否已完成
     int64_t finalRemoved{0};          ///< 终检清除的残留方块数
     int64_t paidAmount{0};
+    bool    dirty{false};             ///< 内存脏标记：仅在状态变更时置 true，由批量事务刷盘
 
     [[nodiscard]] int  chunksPerLayer() const;
     void getChunkGrid(int& nx, int& nz) const;
@@ -253,15 +255,17 @@ public:
 private:
     TaskManager() = default;
 
-    void            stepTask(SweepTask& task);
+    void            stepTask(SweepTask& task, int64_t& globalBudget);
     void            advanceEmptyUnits(SweepTask& task);
     /// 任务结束前的终检清扫：清除选区体积内残留的液体/方块
-    void            runFinalSweep(SweepTask& task);
+    void            runFinalSweep(SweepTask& task, int64_t& globalBudget);
     /// 按每秒预算主动加载该水平范围覆盖的区块
     void            loadChunksForRange(BlockSource& source, int x0, int x1, int z0, int z1);
     /// 把离线期间暂存的退款发放给该玩家
     void            deliverPendingPayouts(Player& player);
-    void            clearUnit(SweepTask& task);
+    void            clearUnit(SweepTask& task, int64_t& budget);
+    /// 重建活跃任务所覆盖的空间区块网格索引（加速液体流入 O(1) 短路判定）
+    void            rebuildActiveChunkGrid();
     void            updateBossBar(SweepTask& task, Player& player);
     void            updateBossBarImpl(SweepTask& task, Player& player);
     void            loadState();
@@ -270,6 +274,7 @@ private:
     [[nodiscard]] Player* findOwner(SweepTask const& task) const;
 
     int                      mChunkLoadBudget{0}; ///< 本 tick 剩余的区块加载额度
+    std::unordered_set<uint64_t> mActiveChunkKeys; ///< 空间哈希网格
     std::vector<SweepTask>   mTasks;
     std::vector<PendingBill> mBills;
     uint64_t                 mNextId{1};
