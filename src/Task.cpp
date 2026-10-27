@@ -608,6 +608,15 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
 
     float ratio = span > 0 ? (float)remain / (float)span : 1.0f;
 
+    // 收尾阶段：进度条按扫描游标归一
+    if (info.phase == BarPhase::Finalizing) {
+        int64_t const w     = std::max<int64_t>(1, task.plan.width());
+        int64_t const d     = std::max<int64_t>(1, task.plan.depth());
+        int64_t const h     = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
+        int64_t const total = w * d * h;
+        ratio               = total > 0 ? (float)((double)task.finalCursor / (double)total) : 1.0f;
+    }
+
     // 颜色按剩余比例，避免 2 秒的分块间隔直接闪红
     visual::BarColor color = visual::BarColor::Green;
     if (span > 0) {
@@ -619,7 +628,11 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
     }
 
     std::string title;
-    if (info.phase == BarPhase::Paused) {
+    if (info.phase == BarPhase::Finalizing) {
+        int pct = (int)std::lround(ratio * 100.0f);
+        pct     = std::clamp(pct, 0, 100);
+        title   = "§e[领地清扫] §f收尾清理 §7| §a进度 " + percentText(pct);
+    } else if (info.phase == BarPhase::Paused) {
         title = "§c[领地清扫] §f任务已暂停 §7| §c释放倒计时 " + std::to_string(remain) + "s";
     } else {
         title = "§e[领地清扫] §f第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层";
@@ -816,6 +829,59 @@ void TaskManager::clearUnit(SweepTask& task) {
     }
 }
 
+void TaskManager::runFinalSweep(SweepTask& task) {
+    auto const& cfg = ConfigManager::getInstance().get();
+
+    if (!cfg.finalSweep) {
+        task.finalSweepDone = true;
+        return;
+    }
+
+    BlockSource* source = blockSourceFor(task.plan.dimId);
+    Block const* airPtr = airBlockPtr();
+    if (!source || !airPtr) {
+        task.finalizing = true; // 维度暂不可用，下一 tick 再试
+        return;
+    }
+
+    task.finalizing = true;
+
+    int64_t const w = std::max<int64_t>(1, task.plan.width());
+    int64_t const d = std::max<int64_t>(1, task.plan.depth());
+    int64_t const h = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
+    int64_t const total = w * d * h;
+
+    int64_t          budget = kBlocksPerTickBudget;
+    BlockChangeContext context{};
+
+    while (task.finalCursor < total && budget > 0) {
+        int64_t const idx = task.finalCursor;
+
+        int const x = task.plan.minX + (int)(idx % w);
+        int const z = task.plan.minZ + (int)((idx / w) % d);
+        int const y = task.plan.minY + (int)(idx / (w * d));
+
+        --budget;
+
+        BlockPos const pos{x, y, z};
+        auto const&    block = source->getBlock(pos);
+
+        // 只删"非空气且非受保护"，底部基岩等依旧不动
+        if (!block.isAir() && !isProtectedBlock(block, y, task.plan.dimId)) {
+            source->setBlock(pos, *airPtr, 3, nullptr, context);
+            ++task.finalRemoved;
+        }
+
+        ++task.finalCursor;
+    }
+
+    if (task.finalCursor >= total) {
+        task.finalizing      = false;
+        task.finalSweepDone  = true;
+        log::get().info("任务 #{} 终检完成，清除残留方块 {} 块。", task.id, task.finalRemoved);
+    }
+}
+
 void TaskManager::advanceEmptyUnits(SweepTask& task) {
     auto const& cfg = ConfigManager::getInstance().get();
     if (!cfg.skipEmptyChunks && !cfg.skipEmptyLayers) {
@@ -919,17 +985,33 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
 }
 
 void TaskManager::stepTask(SweepTask& task) {
-    if (task.finished()) {
+    Player* owner = findOwner(task);
+
+    // 所有层清完后先做终检清扫，再结算（清除清理期间残留的液体/方块）
+    auto completeWithFinalSweep = [&]() -> bool {
+        if (!task.finalSweepDone) {
+            runFinalSweep(task);
+        }
+        if (!task.finalSweepDone) {
+            if (owner) {
+                updateBossBar(task, *owner);
+            }
+            db::upsertTask(task);
+            return false;
+        }
         finishTask(task.id);
+        return true;
+    };
+
+    if (task.finished()) {
+        completeWithFinalSweep();
         return;
     }
-
-    Player* owner = findOwner(task);
 
     // 空分块 / 空层快进（内部处理换层与倒计时设置）
     advanceEmptyUnits(task);
     if (task.finished()) {
-        finishTask(task.id);
+        completeWithFinalSweep();
         return;
     }
 
@@ -1206,6 +1288,14 @@ std::string percentText(int value) { return std::to_string(value) + "％"; }
 
 PhaseInfo describePhase(SweepTask const& task) {
     PhaseInfo info;
+
+    if (task.finalizing) {
+        info.phase         = BarPhase::Finalizing;
+        info.remainSeconds = 0;
+        info.spanSeconds   = 0;
+        info.name          = "收尾清理";
+        return info;
+    }
 
     if (task.state == TaskState::Paused) {
         int const total    = std::max(1, ConfigManager::getInstance().get().pauseAutoCancelSeconds);

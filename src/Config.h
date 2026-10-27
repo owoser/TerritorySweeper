@@ -82,6 +82,8 @@ struct Config {
     int  preserveBottomLayers{1};
     /// 任务运行期间阻止液体流入清理区域
     bool blockLiquidInflow{true};
+    /// 任务完成前对选区做一次终检清扫（清除残留液体/方块）
+    bool finalSweep{true};
 
     // ---- 价格阶梯（按面积从小到大）----
     std::vector<PriceLevel> priceLevels;

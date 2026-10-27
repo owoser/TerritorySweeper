@@ -216,8 +216,14 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
     field(
         "block_liquid_inflow",
         cfg.blockLiquidInflow ? "true" : "false",
-        {"任务运行期间是否阻止液体流入清理区域",
-         "开启后水/岩浆不会灌进正在清理的范围，任务结束后恢复流动"}
+        {"任务进行中（含暂停）是否阻止液体流入清理区域",
+         "开启后水/岩浆不会灌进正在清理的范围，任务结束或终止后恢复流动"}
+    );
+
+    field(
+        "final_sweep",
+        cfg.finalSweep ? "true" : "false",
+        {"任务完成前是否对整个选区做一次终检清扫", "用于清除清理期间残留的液体或其它方块"}
     );
 
     {
@@ -607,6 +613,7 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "clear_bedrock", cfg.clearBedrock);
     readIfPresent(root, "preserve_bottom_layers", cfg.preserveBottomLayers);
     readIfPresent(root, "block_liquid_inflow", cfg.blockLiquidInflow);
+    readIfPresent(root, "final_sweep", cfg.finalSweep);
     readIfPresent(root, "pause_auto_cancel_seconds", cfg.pauseAutoCancelSeconds);
 
     if (root.contains("price_levels") && root["price_levels"].is_array() && !root["price_levels"].empty()) {

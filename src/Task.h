@@ -111,6 +111,10 @@ struct SweepTask {
     int     waitLoadedTicks{0};     ///< 当前分块等待区块加载的秒数（仅用于告警）
     int     bedrockRemovedInLayer{0}; ///< 本层已移除的基岩数量（审计用）
     int     lowestBedrockRemovedY{0}; ///< 本层被移除基岩的最低 Y（审计用）
+    int64_t finalCursor{0};           ///< 终检清扫游标
+    bool    finalizing{false};        ///< 是否处于终检阶段
+    bool    finalSweepDone{false};    ///< 终检是否已完成
+    int64_t finalRemoved{0};          ///< 终检清除的残留方块数
     int64_t paidAmount{0};
 
     [[nodiscard]] int  chunksPerLayer() const;
@@ -137,6 +141,7 @@ enum class BarPhase {
     LayerCountdown, ///< 层间倒计时
     ChunkInterval,  ///< 分块间隔
     Paused,         ///< 已暂停，显示释放倒计时
+    Finalizing,     ///< 收尾清理（终检残留方块）
 };
 
 struct PhaseInfo {
@@ -244,6 +249,8 @@ private:
 
     void            stepTask(SweepTask& task);
     void            advanceEmptyUnits(SweepTask& task);
+    /// 任务结束前的终检清扫：清除选区体积内残留的液体/方块
+    void            runFinalSweep(SweepTask& task);
     /// 按每秒预算主动加载该水平范围覆盖的区块
     void            loadChunksForRange(BlockSource& source, int x0, int x1, int z0, int z1);
     /// 把离线期间暂存的退款发放给该玩家

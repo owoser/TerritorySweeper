@@ -319,9 +319,19 @@ void openManage(Player& player, SweepTask& task) {
 
     if (task.state == TaskState::Running) {
         auto const info = describePhase(task);
-        content += info.phase == BarPhase::Clearing
-                     ? "当前：清理中"
-                     : "当前：" + std::string{info.name} + " " + std::to_string(info.remainSeconds) + " 秒";
+
+        if (info.phase == BarPhase::Finalizing) {
+            int64_t const w     = std::max<int64_t>(1, task.plan.width());
+            int64_t const d     = std::max<int64_t>(1, task.plan.depth());
+            int64_t const h     = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
+            int64_t const total = w * d * h;
+            int           pct   = total > 0 ? (int)((double)task.finalCursor * 100.0 / (double)total) : 100;
+            content += "当前：收尾清理 " + percentText(std::clamp(pct, 0, 100));
+        } else if (info.phase == BarPhase::Clearing) {
+            content += "当前：清理中";
+        } else {
+            content += "当前：" + std::string{info.name} + " " + std::to_string(info.remainSeconds) + " 秒";
+        }
     } else {
         auto const info = describePhase(task);
         content += "已暂停：" + std::to_string(task.pausedSeconds) + " 秒\n";
