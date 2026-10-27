@@ -8,7 +8,7 @@
 ## 📌 当前版本迭代标定
 
 - **基准发版版本**：`v1.0.0` (commit `aadc689`)
-- **当前开发迭代标识**：`1.0.0+e0b5f0b` (或基于最新提交 `1.0.0+d8a2b56`)
+- **当前开发迭代标识**：`1.0.0+97b80af` (或基于最新提交 `1.0.0+d8a2b56`)
 - **配置系统版本**：`config_version: 4`
 
 ---
@@ -131,6 +131,10 @@
   - **SQLite 极致优化**：预编译语句池化常驻复用（`Statement::cached`），内存脏标记批量单事务提交（`flushDirtyTasks`），PRAGMA mmap/cache_size/temp_store 调优；
   - **配置升级至 v4**：完善 `chunk_interval_seconds: 0` 饱和推进特性的说明。
 
+### Commit 11: `7733de9` (2026-10-27 21:58:32 +0800)
+- **信息**：`docs: 恢复 README.md 为 v1.0.0 正式发版基线（严格遵守 AGENT.md 规范，日常迭代统一维护在 UNRELEASED.md）`
+- **内容**：恢复对外正式文档 `README.md` 与 `v1.0.0` 完全一致；确立发版前全部开发事实集中维护于本地 `UNRELEASED.md` 的铁律。
+
 ### Commit 12: `e0b5f0b` (2026-10-27 23:18:20 +0800)
 - **信息**：`fix(cleanup): 修复 isSubChunkUniformAir 绝对索引错位导致空层误跳残留水柱+终检确保完整清空当前SubChunk+清除含水层(Layer 1 ExtraBlock)`
 - **内容**：
@@ -138,9 +142,9 @@
   - **非纯空 SubChunk 完整清空**：修复终检中单个 SubChunk 被中断跳过的逻辑，一旦进入非纯空 SubChunk，必须将其所辖选区完整点查清空后再推进 `finalCursor`，彻底杜绝局部方块残留；
   - **含水方块 (Waterlogged Blocks) 双层清理**：在 `clearUnit` 与 `runFinalSweep` 中同步置空 Layer 1（`ExtraBlock`），彻底清除楼梯/台阶/发光地衣等方块破坏后遗留的水。
 
-### Commit 11: `7733de9` (2026-10-27 21:58:32 +0800)
-- **信息**：`docs: 恢复 README.md 为 v1.0.0 正式发版基线（严格遵守 AGENT.md 规范，日常迭代统一维护在 UNRELEASED.md）`
-- **内容**：恢复对外正式文档 `README.md` 与 `v1.0.0` 完全一致；确立发版前全部开发事实集中维护于本地 `UNRELEASED.md` 的铁律。
+### Commit 13: `97b80af` (2026-10-27 23:40:57 +0800)
+- **信息**：`docs: 将 UNRELEASED.md 纳入 Git 跟踪并推送到仓库，记录 v1.0.0 后的全部迭代历史`
+- **内容**：将 `UNRELEASED.md` 从 `.gitignore` 中移除，正式推送到 GitHub 远端仓库公开跟踪，确保团队与开源社区能够随时查阅开发分支的最新技术进展与修复明细。
 
 ---
 
