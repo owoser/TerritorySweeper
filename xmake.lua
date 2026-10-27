@@ -5,8 +5,7 @@ if is_plat("windows") then
 end
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
-add_repositories("iceblcokmc https://github.com/IceBlcokMC/xmake-repo.git")
-add_repositories("yyz-repo https://github.com/yangyangzhong82/xmake-repo.git")
+-- 仅需 LiteLDev 仓库（levilamina / levibuildscript / sqlite3 都在其中）
 
 -- 说明：LeviLamina SDK 版本线需与服务器实际部署的 LL3 保持同一 26.51.x 小版本线。
 -- 这里使用 26.51.6（本机已缓存的构建产物）；26.51.7/26.51.8 为同线补丁版本，
@@ -71,6 +70,13 @@ target("TerritorySweeper")
 
     -- 仅链接 LeviLamina 与 sqlite3；跨插件调用全部走运行时符号解析（详见 Compat.cpp）
     add_packages("levilamina", "sqlite3")
+
+    -- iListenAttentively：从服务器已安装的 DLL 反向生成导入库（见 tools/gen-ila-lib.ps1），
+    -- 使用延迟加载，缺失该插件时本插件仍能正常加载（只是不再拦截液体）
+    add_includedirs("third_party/iListenAttentively/src")
+    add_linkdirs("third_party/lib")
+    add_links("ILA")
+    add_ldflags("/DELAYLOAD:iListenAttentively.dll", "/DEFAULTLIB:delayimp.lib")
 
     set_kind("shared")
     set_languages("c++23")

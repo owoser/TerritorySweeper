@@ -274,16 +274,28 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 "block_liquid_inflow": true
 ```
 
-- 液体（水 / 岩浆，源与流动水都算）被放进**运行中任务**的清理范围时，立即还原成空气；
+- 监听 iListenAttentively 的 `LiquidFlowBeforeEvent`（与 PLand 同一个事件），
+  目标格落在**运行中任务**的清理范围内时直接 `cancel()` —— 液体根本不会被放置；
 - 任务暂停/结束后不再拦截，水恢复正常流动；
-- 不修改选区外的任何方块（不像"切断外圈水源"那样破坏别人的池子/河流）；
-- 全局开关，关闭后行为回到原版（会被灌水）。
+- 不修改选区外的任何方块，不会像"切断外圈水源"那样破坏别人的池子或河流；
+- 关闭开关后行为回到原版（会被灌水）。
 
-> 实现说明：LeviLamina 本体没有"液体流动前"事件，PLand 是通过第三方事件库
-> iListenAttentively 的 `LiquidFlowEvent` 事前取消。该库依赖的 LeviLamina 源码包
-> 在本机构建失败（`CommandRegistry` 不完整类型），所以这里改用 LL 自带的
-> `BlockChangedEvent` **事后还原**：功能一致，代价是液体可能闪一帧。
-> 若之后 iListenAttentively 能正常安装，只需替换 `LiquidGuard` 的监听实现，配置与行为不变。
+### 依赖方式
+
+iListenAttentively 是 C++ 库而不是可调用的插件 API，所以：
+
+- 头文件：仓库内 `third_party/iListenAttentively/src`（v0.17.2，LGPL）；
+- 导入库：`third_party/lib/ILA.lib` 由 `tools/gen-ila-lib.ps1` **从服务器上已安装的 DLL 反向生成**
+  （不重新编译该库，避免依赖它的 LeviLamina 源码构建）；
+- 清单里声明了对 `iListenAttentively` 的依赖，保证加载顺序。
+
+启动时会打印一行自检：
+
+```
+[液体拦截] 检测到 iListenAttentively（已加载），LiquidFlowBeforeEvent 接口可用
+```
+
+若服务器没有安装该库或版本不匹配，会打印告警，其余功能不受影响。
 
 ## 13. 区块加载与基岩策略
 

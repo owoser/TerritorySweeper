@@ -5,6 +5,9 @@
     "type": "native",
     "dependencies": [
         {
+            "name": "iListenAttentively"
+        },
+        {
             "name": "PLand"
         },
         {

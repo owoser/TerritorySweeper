@@ -14,3 +14,6 @@
 *.ilk
 *.log
 *.tmp
+
+# ILA 导入库（由 tools/gen-ila-lib.ps1 从已安装 DLL 生成）
+/third_party/lib/
