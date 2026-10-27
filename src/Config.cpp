@@ -213,6 +213,18 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
         {"保留世界最底部的 N 层基岩（掉下去会进虚空的那层）"}
     );
 
+    field(
+        "cut_liquid_border",
+        cfg.cutLiquidBorder ? "true" : "false",
+        {"清理前是否切断外圈液体源，防止水或岩浆灌回清理区域（只挖液体源，不动其它方块）"}
+    );
+
+    field(
+        "liquid_border_radius",
+        std::to_string(cfg.liquidBorderRadius),
+        {"切断液体源时向外扩展的格数，1~4 较合理，0 表示不处理"}
+    );
+
     {
         std::string block;
         appendComment(
@@ -522,6 +534,8 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "chunk_load_budget", cfg.chunkLoadBudget);
     readIfPresent(root, "clear_bedrock", cfg.clearBedrock);
     readIfPresent(root, "preserve_bottom_layers", cfg.preserveBottomLayers);
+    readIfPresent(root, "cut_liquid_border", cfg.cutLiquidBorder);
+    readIfPresent(root, "liquid_border_radius", cfg.liquidBorderRadius);
     readIfPresent(root, "pause_auto_cancel_seconds", cfg.pauseAutoCancelSeconds);
 
     if (root.contains("price_levels") && root["price_levels"].is_array() && !root["price_levels"].empty()) {

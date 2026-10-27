@@ -264,7 +264,26 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 未加载区块的 `getBlock()` 会返回空气，若不设防会把整片区域误判成"已清空"，
 导致进度瞬间跑满、退款算成 0。
 
-## 12. 区块加载与基岩策略
+## 12. 流动水 / 岩浆回灌
+
+清出来的空腔会被选区外的液体灌满 —— 源头还在，吸水永远赶不上灌水。
+
+解法：**开始清理前**，把选区边界外扩 `liquid_border_radius` 格这一圈内、
+覆盖整个任务 Y 范围的**液体源方块**切断：
+
+```jsonc
+"cut_liquid_border": true,     // 是否切断外圈液体源
+"liquid_border_radius": 2,     // 外扩格数，0 = 不处理
+```
+
+- 只挖**液体源**，流动水与其它方块一律不动，不会破坏周边建筑；
+- 源头消失后，已经流进来的水会自行退去；
+- 扫描按 `empty_scan_budget` 分片，几 tick 内完成，不产生卡顿尖峰；
+- 完成后日志输出：`任务 #N 已切断 12 个液体源（外扩 2 格）`。
+
+若河流源头在半径之外仍会倒灌，把 `liquid_border_radius` 调大（建议不超过 4）。
+
+## 13. 区块加载与基岩策略
 
 **离开判定按水平范围**：`leave_check_ignore_y`（默认 `true`）让"是否在领地内"只看 X/Z，
 玩家站到高空（例如 y=456）或掉进深层不会被误判成离开领地。设为 `false` 恢复三维判定。
@@ -284,7 +303,7 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 因此默认行为是"一路清到 `-64`，只留最底层那层基岩"。想完全不动基岩，
 把 `clear_bedrock` 设为 `false`（此时基岩层会被判为空层而快速跳过）。
 
-## 13. 看门狗判定规则
+## 14. 看门狗判定规则
 
 `pause_on_player_leave` 打开时，每秒对每个**运行中**任务执行一次判定（`evaluateLeaveState`）：
 
@@ -305,7 +324,7 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 [watchdog] task=#1 owner=Allen13in dim=0 pos=(79.0,71.0,214.0) land=#12 inside=true off=0s
 ```
 
-## 14. BossBar 发包顺序（重要）
+## 15. BossBar 发包顺序（重要）
 
 Bedrock 的 BossBar 是**挂在实体上的**，不是"无名进度条"。因此每次刷新必须按
 LSE `PlayerClass::setBossBar`（YEssential/Fcam 用的那个 API）的顺序三连发：
@@ -341,7 +360,7 @@ LSE `PlayerClass::setBossBar`（YEssential/Fcam 用的那个 API）的顺序三�
 **排查开关**：`bossbar_enabled` / `region_frame_enabled`，任一关闭即可隔离显示层；
 `debug: true` 打开后会输出每个 `[bossbar]` 发包与 `[task]` 推进日志。
 
-## 15. 已知取舍
+## 16. 已知取舍
 
 1. **长加载**：不使用 BDS TickingArea（其 `_addArea` 需要 LevelStorage，且会与玩家自建区域混淆），
    改为清理时按 `chunk_load_budget` 主动加载目标区块，玩家离开也不会中断。
