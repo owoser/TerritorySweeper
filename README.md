@@ -111,13 +111,6 @@ xmake
 > 若该文件还是更早的 `"// 说明": 值` 伪装注释格式，则会重排为新版注释排版，并把原文件备份为
 > `config.json.bak-<时间戳>`。两者同名同时存在时优先读取 `.jsonc`，`.json` 会被忽略。
 
-**版本迁移**：`config_version` 用于配置结构升级。当前版本为 **4**：
-
-- 旧版本（< 4）的文件在启动时会被**整份重写**：移除已废弃的字段、补齐最新并发与优化字段、刷新注释排版，现有配置值原样保留；
-- 重写前会自动备份为 `config.jsonc.bak-<时间戳>`；
-- 已经是 v4 的文件不会被改写，手写注释与排版均保留；
-- 同一版本内新增字段时，仍然走"只补缺失项、不动其它内容"的增量逻辑。
-
 关键项：
 
 ```jsonc
@@ -132,11 +125,7 @@ xmake
 // chunked_clean_enabled   是否启用分块（默认 true）
 // chunk_matrix_width/depth 分块尺寸（默认 10x10）
 // chunked_min_area        面积超过该值才分块（默认 1024 = 32x32）
-// chunk_interval_seconds  分块间隔（默认 2 秒；若设为 0，单 tick 内将连续清扫多个分块饱和吞吐，可能整层瞬间清完）
-// global_blocks_per_tick_budget 全服所有并发任务共享的每秒最大方块处理预算（默认 12000，确保超多并发时 TPS 稳死 20.0）
-// chunk_tail_padding      边缘碎屑分片吸纳阈值（默认 4 格，避免产生 1 格碎屑）
-// subchunk_culling        是否开启 SubChunk 级快速粗筛（默认 true）
-// final_sweep             任务完成前是否对选区做终检清扫（默认 true）
+// chunk_interval_seconds  分块间隔（默认 2）
 // pause_on_player_leave   离开领地是否暂停（默认 true）
 // auto_resume_on_return   回到领地是否自动续跑（默认 true，仅对"因离开暂停"的任务生效）
 // leave_check_tolerance   判定是否在领地内时的水平容差（默认 2 格）
@@ -275,53 +264,7 @@ doneUnits  = layersDone × chunksPerLayer() + chunkIndex
 未加载区块的 `getBlock()` 会返回空气，若不设防会把整片区域误判成"已清空"，
 导致进度瞬间跑满、退款算成 0。
 
-## 12. 液体流入拦截
-
-清理出来的空腔会被选区外的液体灌满 —— 源头还在，抽水永远赶不上灌水。
-
-借鉴 PLand 的做法（`allowLiquidFlow`），在**任务运行期间拦截液体流入清理范围**：
-
-```jsonc
-"block_liquid_inflow": true
-```
-
-- 监听 iListenAttentively 的 `LiquidFlowBeforeEvent`（与 PLand 同一个事件），
-  目标格落在**运行中任务**的清理范围内时直接 `cancel()` —— 液体根本不会被放置；
-- **任务暂停期间依旧拦截**（区域仍被占用，续跑时不用重新抽水）；只有任务**完成 / 终止 / 暂停超时释放**后才恢复流动；
-- 不修改选区外的任何方块，不会像"切断外圈水源"那样破坏别人的池子或河流；
-- 关闭开关后行为回到原版（会被灌水）。
-
-### 终检清扫与 SubChunk 快速粗筛（`final_sweep` 与 `subchunk_culling`）
-
-逐层清理是"走过不回头"的：清理期间灌进来的水、或早期版本因区块未加载而漏掉的方块，
-会留在已经扫过的层里，形成**悬在半空的水块**。
-
-因此任务在**所有层清完后、结算之前**，会对整个选区体积执行快速终检清扫：
-
-- **SubChunk 块级粗筛（O(1) 瞬时跳过）**：开启 `subchunk_culling`（默认开启）时，引擎以 16×16×16 SubChunk 为单位检查是否已全部为空气（`isUniform(air)`）。对于大选区（如 64×133×64 约 54 万格），直接跳过已清空的 144 个 SubChunk，耗时从 60 多秒压至 1 秒以内！
-- **精准局部点查**：仅对非纯空气的 SubChunk 进行选区相交局部的方块清理，只删除液体和未清理方块，底部基岩依然完好保留；
-- **物理更新消除**：置空时关闭邻居物理级联，仅网络发包同步客户端，大幅减轻服务器 CPU 负担；
-- **边缘余量吸纳（Tail Absorption）**：由 `chunk_tail_padding`（默认 4 格）控制，当分片边缘仅残余 1~4 格时直接并入前一分片，彻底避免生成 1 格宽的碎屑分块而多等整整 2 秒；
-- 终检完成才 `finishTask` 结算；中途暂停/重启会从断点继续。
-
-### 依赖方式
-
-iListenAttentively 是 C++ 库而不是可调用的插件 API，所以：
-
-- 头文件：仓库内 `third_party/iListenAttentively/src`（v0.17.2，LGPL）；
-- 导入库：`third_party/lib/ILA.lib` 由 `tools/gen-ila-lib.ps1` **从服务器上已安装的 DLL 反向生成**
-  （不重新编译该库，避免依赖它的 LeviLamina 源码构建）；
-- 清单里声明了对 `iListenAttentively` 的依赖，保证加载顺序。
-
-启动时会打印一行自检：
-
-```
-[液体拦截] 检测到 iListenAttentively（已加载），LiquidFlowBeforeEvent 接口可用
-```
-
-若服务器没有安装该库或版本不匹配，会打印告警，其余功能不受影响。
-
-## 13. 区块加载与基岩策略
+## 12. 区块加载与基岩策略
 
 **离开判定按水平范围**：`leave_check_ignore_y`（默认 `true`）让"是否在领地内"只看 X/Z，
 玩家站到高空（例如 y=456）或掉进深层不会被误判成离开领地。设为 `false` 恢复三维判定。
@@ -338,27 +281,10 @@ iListenAttentively 是 C++ 库而不是可调用的插件 API，所以：
 - `clear_bedrock`（默认 `true`）：清扫会连基岩一起清；
 - `preserve_bottom_layers`（默认 `1`）：保留世界最底部的 N 层基岩（掉下去会进虚空的那层）。
 
-因此默认行为是"一路清到 `-63`，只留 `-64` 那一层基岩"。想完全不动基岩，
+因此默认行为是"一路清到 `-64`，只留最底层那层基岩"。想完全不动基岩，
 把 `clear_bedrock` 设为 `false`（此时基岩层会被判为空层而快速跳过）。
 
-**绝对地板**：世界最低层（主世界 `-64`、下界/末地 `0`）**永远保留**，与配置无关：
-
-- `preserve_bottom_layers` 小于 1 时自动按 1 处理并提示；
-- 清理前校验目标层，等于或低于世界最低层直接跳过；
-- 写入后还有一道兜底：若发现写入了最低层以下，记录 ERROR 并拦截。
-
-**取证日志**（`debug: true`）可用于排查"底层被挖穿"：
-
-```
-[bedrock] 任务 #12 层 y=-63：移除基岩 1024 块（最低 y=-63）
-[bedrock] 任务 #12 首次移除基岩于 (812, -63, 296)
-[bedrock][ERROR] 任务 #12 试图在世界最低层写入 (...)
-```
-
-正常清理只会出现 `y=-63` 及以上的记录；一旦出现 `[bedrock][ERROR]` 或最低 y 为 `-64`，
-说明保护逻辑被绕过，把日志发出来即可定位。
-
-## 14. 看门狗判定规则
+## 13. 看门狗判定规则
 
 `pause_on_player_leave` 打开时，每秒对每个**运行中**任务执行一次判定（`evaluateLeaveState`）：
 
@@ -379,7 +305,7 @@ iListenAttentively 是 C++ 库而不是可调用的插件 API，所以：
 [watchdog] task=#1 owner=Allen13in dim=0 pos=(79.0,71.0,214.0) land=#12 inside=true off=0s
 ```
 
-## 15. BossBar 发包顺序（重要）
+## 14. BossBar 发包顺序（重要）
 
 Bedrock 的 BossBar 是**挂在实体上的**，不是"无名进度条"。因此每次刷新必须按
 LSE `PlayerClass::setBossBar`（YEssential/Fcam 用的那个 API）的顺序三连发：
@@ -415,23 +341,7 @@ LSE `PlayerClass::setBossBar`（YEssential/Fcam 用的那个 API）的顺序三�
 **排查开关**：`bossbar_enabled` / `region_frame_enabled`，任一关闭即可隔离显示层；
 `debug: true` 打开后会输出每个 `[bossbar]` 发包与 `[task]` 推进日志。
 
-## 16. 多任务高并发调度与 SQLite 极致性能
-
-1. **全局配额池（Global Quota Pool）**：
-   全服所有正在运行的任务共享 `global_blocks_per_tick_budget`（默认 12,000 块/秒）。
-   无论同时运行 1 个、10 个还是 20 个大任务，主线程在清理方块上的耗时严格锁死在 3~5ms 内，**服务器 TPS 始终稳定在 20.0 满帧**，绝不可能因并发任务多而拖垮服务器。
-2. **时间片公平轮换（Round-Robin）**：
-   并发任务采用公平轮转调度，每个任务均等获得推进配额，杜绝单一大任务霸占算力或造成任务饥饿。
-3. **空间哈希网格加速水流拦截**：
-   活跃任务的区块坐标维护在空间哈希网格中，水流事件发生时首先通过哈希做 O(1) 瞬时短路判断（< 5ns），99.9% 发生在任务区域外的流体直接放行，消灭多任务线性比对开销。
-4. **SQLite 预编译语句池化常驻复用**：
-   高频 SQL（upsert、delete、payout 等）首次执行后编译为 VDBE 字节码常驻内存终身复用，消除 100% 的 SQL 反复编译损耗。
-5. **内存脏标记与批量单事务提交**：
-   任务运行状态以内存为准，仅在状态发生实质变更时打上 dirty 标记；每秒将所有脏任务打包为单个 `BEGIN ... COMMIT` 事务批量写入，将磁盘写事务减少 95% 以上。
-6. **企业级 PRAGMA 引擎调优**：
-   默认启用 256MB 内存映射 I/O（mmap）、16MB 内存页缓存（cache_size=-16000）、内存临时表（temp_store=MEMORY）与 WAL 优化。
-
-## 17. 已知取舍
+## 15. 已知取舍
 
 1. **长加载**：不使用 BDS TickingArea（其 `_addArea` 需要 LevelStorage，且会与玩家自建区域混淆），
    改为清理时按 `chunk_load_budget` 主动加载目标区块，玩家离开也不会中断。
