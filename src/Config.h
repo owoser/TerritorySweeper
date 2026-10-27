@@ -20,7 +20,7 @@ struct PriceLevel {
  * 所有字段名与 config.json 中的键一一对应，缺省值即为默认配置。
  */
 struct Config {
-    int configVersion{2};
+    int configVersion{3};
 
     /// 调试模式：输出发包、任务推进、交互等详细日志（排查用，平时保持 false）
     bool debugEnabled{false};
@@ -84,6 +84,11 @@ struct Config {
     bool blockLiquidInflow{true};
     /// 任务完成前对选区做一次终检清扫（清除残留液体/方块）
     bool finalSweep{true};
+
+    /// 边缘碎屑分片吸纳阈值（格）：当分片边缘残余宽度/深度 <= 该值时，直接并入前一分片
+    int  chunkTailPadding{4};
+    /// 是否开启 SubChunk 级快速粗筛（跳过纯空气 SubChunk）
+    bool subchunkCulling{true};
 
     // ---- 价格阶梯（按面积从小到大）----
     std::vector<PriceLevel> priceLevels;

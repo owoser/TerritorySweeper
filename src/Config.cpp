@@ -226,6 +226,19 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
         {"任务完成前是否对整个选区做一次终检清扫", "用于清除清理期间残留的液体或其它方块"}
     );
 
+    field(
+        "chunk_tail_padding",
+        std::to_string(cfg.chunkTailPadding),
+        {"边缘碎屑分片吸纳阈值（格）：当边缘残余宽度/深度 <= 该值时，直接并入前一分片",
+         "彻底避免边缘刚好超出1~4格时产生大量单独等待的小碎屑分片"}
+    );
+
+    field(
+        "subchunk_culling",
+        cfg.subchunkCulling ? "true" : "false",
+        {"是否开启 SubChunk 级快速粗筛（跳过纯空气 SubChunk，大幅加快大范围终检）"}
+    );
+
     {
         std::string block;
         appendComment(
@@ -335,7 +348,7 @@ bool appendMissingFields(
 
 /// 配置版本迁移：重写配置以移除废弃字段（写入前备份原文件）
 bool migrateConfigFile(std::filesystem::path const& file, nlohmann::json const& root, Config& cfg) {
-    constexpr int kCurrentConfigVersion = 2;
+    constexpr int kCurrentConfigVersion = 3;
 
     if (cfg.configVersion >= kCurrentConfigVersion) {
         return false;
@@ -614,6 +627,8 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "preserve_bottom_layers", cfg.preserveBottomLayers);
     readIfPresent(root, "block_liquid_inflow", cfg.blockLiquidInflow);
     readIfPresent(root, "final_sweep", cfg.finalSweep);
+    readIfPresent(root, "chunk_tail_padding", cfg.chunkTailPadding);
+    readIfPresent(root, "subchunk_culling", cfg.subchunkCulling);
     readIfPresent(root, "pause_auto_cancel_seconds", cfg.pauseAutoCancelSeconds);
 
     if (root.contains("price_levels") && root["price_levels"].is_array() && !root["price_levels"].empty()) {

@@ -17,6 +17,7 @@
 #include "mc/world/level/BlockPos.h"
 
 class BlockSource;
+class Block;
 
 #include <chrono>
 #include <cstdint>
@@ -118,6 +119,8 @@ struct SweepTask {
     int64_t paidAmount{0};
 
     [[nodiscard]] int  chunksPerLayer() const;
+    void getChunkGrid(int& nx, int& nz) const;
+    void getChunkBounds(int ci, int& x0, int& x1, int& z0, int& z1) const;
     [[nodiscard]] int  progressPercent() const;
     [[nodiscard]] bool finished() const { return layersDone >= plan.layerCount; }
 };
@@ -155,6 +158,9 @@ struct PhaseInfo {
 
 /// 该方块范围是否已完全加载。未加载时 getBlock 会返回空气，不能据此判断"空"。
 bool isRegionLoaded(BlockSource& source, BlockPos const& min, BlockPos const& max);
+
+/// 检查给定坐标所在的 SubChunk 是否已经全部是空气（用于 O(1) 块级粗筛）
+bool isSubChunkUniformAir(BlockSource& source, BlockPos const& pos, Block const& air);
 
 /// 该分块在指定层是否没有任何需要清理的方块（空气与基岩都算"无需处理"）
 bool isChunkEmptyAtLayer(

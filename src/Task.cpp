@@ -14,6 +14,8 @@
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/ChunkPos.h"
 #include "mc/world/level/chunk/ChunkSource.h"
+#include "mc/world/level/chunk/LevelChunk.h"
+#include "mc/world/level/chunk/SubChunk.h"
 #include "mc/world/level/block/BlockChangeContext.h"
 #include "mc/world/level/Level.h"
 #include "mc/util/BlockUtils.h"
@@ -40,10 +42,7 @@ Block const* airBlockPtr() {
 }
 constexpr char const* kBedrock = "minecraft:bedrock";
 
-/// 世界最低高度（0 = 主世界，1 = 下界，2 = 末地）
-constexpr int worldMinYForDim(int dimId) { return (dimId == 1 || dimId == 2) ? 0 : -64; }
-
-int worldMinY(int dimId); // 定义在下方，供保护判定复用
+int worldMinY(int dimId); // 统一维度最低高度，供保护判定复用
 
 /// 该方块是否"保留不动"：既不清除，也不计入可清理工作量
 bool isProtectedBlock(Block const& block, int y, int dimId) {
@@ -107,12 +106,70 @@ int SweepPlan::layerY(int index) const {
     return direction == SweepDirection::Down ? (startY - index) : (startY + index);
 }
 
-int SweepTask::chunksPerLayer() const {
-    if (!plan.chunked) {
+namespace {
+
+int calculateChunkDimCount(int totalSpan, int chunkSize, int tailPadding) {
+    if (chunkSize <= 0) {
         return 1;
     }
-    int nx = (plan.width() + plan.chunkWidth - 1) / plan.chunkWidth;
-    int nz = (plan.depth() + plan.chunkDepth - 1) / plan.chunkDepth;
+    if (totalSpan <= chunkSize + tailPadding) {
+        return 1;
+    }
+    int count = totalSpan / chunkSize;
+    int rem   = totalSpan % chunkSize;
+    if (rem > tailPadding) {
+        ++count;
+    }
+    return std::max(1, count);
+}
+
+} // namespace
+
+void SweepTask::getChunkGrid(int& nx, int& nz) const {
+    if (!plan.chunked) {
+        nx = 1;
+        nz = 1;
+        return;
+    }
+    auto const& cfg     = ConfigManager::getInstance().get();
+    int const   padding = std::max(0, cfg.chunkTailPadding);
+
+    int const cw = std::max(1, plan.chunkWidth);
+    int const cd = std::max(1, plan.chunkDepth);
+
+    nx = calculateChunkDimCount(plan.width(), cw, padding);
+    nz = calculateChunkDimCount(plan.depth(), cd, padding);
+}
+
+void SweepTask::getChunkBounds(int ci, int& x0, int& x1, int& z0, int& z1) const {
+    if (!plan.chunked) {
+        x0 = plan.minX;
+        x1 = plan.maxX;
+        z0 = plan.minZ;
+        z1 = plan.maxZ;
+        return;
+    }
+
+    int nx = 1;
+    int nz = 1;
+    getChunkGrid(nx, nz);
+
+    int const cx   = ci % nx;
+    int const cz   = ci / nx;
+    int const cw   = std::max(1, plan.chunkWidth);
+    int const cd   = std::max(1, plan.chunkDepth);
+
+    x0 = plan.minX + cx * cw;
+    x1 = (cx == nx - 1) ? plan.maxX : std::min(x0 + cw - 1, plan.maxX);
+
+    z0 = plan.minZ + cz * cd;
+    z1 = (cz == nz - 1) ? plan.maxZ : std::min(z0 + cd - 1, plan.maxZ);
+}
+
+int SweepTask::chunksPerLayer() const {
+    int nx = 1;
+    int nz = 1;
+    getChunkGrid(nx, nz);
     return std::max(1, nx * nz);
 }
 
@@ -610,11 +667,20 @@ void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
 
     // 收尾阶段：进度条按扫描游标归一
     if (info.phase == BarPhase::Finalizing) {
-        int64_t const w     = std::max<int64_t>(1, task.plan.width());
-        int64_t const d     = std::max<int64_t>(1, task.plan.depth());
-        int64_t const h     = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
-        int64_t const total = w * d * h;
-        ratio               = total > 0 ? (float)((double)task.finalCursor / (double)total) : 1.0f;
+        auto const& cfg = ConfigManager::getInstance().get();
+        if (cfg.subchunkCulling) {
+            int const subCountX = (task.plan.maxX >> 4) - (task.plan.minX >> 4) + 1;
+            int const subCountZ = (task.plan.maxZ >> 4) - (task.plan.minZ >> 4) + 1;
+            int const subCountY = (task.plan.maxY >> 4) - (task.plan.minY >> 4) + 1;
+            int64_t const total = static_cast<int64_t>(subCountX) * subCountZ * subCountY;
+            ratio = total > 0 ? (float)((double)task.finalCursor / (double)total) : 1.0f;
+        } else {
+            int64_t const w     = std::max<int64_t>(1, task.plan.width());
+            int64_t const d     = std::max<int64_t>(1, task.plan.depth());
+            int64_t const h     = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
+            int64_t const total = w * d * h;
+            ratio               = total > 0 ? (float)((double)task.finalCursor / (double)total) : 1.0f;
+        }
     }
 
     // 颜色按剩余比例，避免 2 秒的分块间隔直接闪红
@@ -712,21 +778,9 @@ void TaskManager::clearUnit(SweepTask& task) {
         return;
     }
 
-    int const y   = task.plan.layerY(task.layersDone);
-    int const cw  = task.plan.chunked ? task.plan.chunkWidth : task.plan.width();
-    int const cd  = task.plan.chunked ? task.plan.chunkDepth : task.plan.depth();
-    int const nx  = task.plan.chunked ? (task.plan.width() + cw - 1) / cw : 1;
-    int const cz  = task.plan.chunked ? (task.plan.depth() + cd - 1) / cd : 1;
-
-    int const ci = task.chunkIndex;
-    int const cx = ci % nx;
-    int const czIdx = ci / nx;
-
-    int const x0 = task.plan.minX + cx * cw;
-    int const x1 = std::min(x0 + cw - 1, task.plan.maxX);
-    int const z0 = task.plan.minZ + czIdx * cd;
-    int const z1 = std::min(z0 + cd - 1, task.plan.maxZ);
-    (void)cz;
+    int const y = task.plan.layerY(task.layersDone);
+    int x0 = 0, x1 = 0, z0 = 0, z1 = 0;
+    task.getChunkBounds(task.chunkIndex, x0, x1, z0, z1);
 
     Block const* airPtr = airBlockPtr();
     if (!airPtr) {
@@ -787,7 +841,8 @@ void TaskManager::clearUnit(SweepTask& task) {
                         pos.z
                     );
                 } else {
-                    source->setBlock(pos, air, 3, nullptr, changeContext);
+                    // updateFlags = 2: 仅向客户端发包同步，不广播邻居物理连锁更新，避免大量连锁掉帧
+                    source->setBlock(pos, air, 2, nullptr, changeContext);
 
                     if (isBedrock) {
                         if (task.bedrockRemovedInLayer == 0 || y < task.lowestBedrockRemovedY) {
@@ -846,6 +901,95 @@ void TaskManager::runFinalSweep(SweepTask& task) {
 
     task.finalizing = true;
 
+    int const minX = task.plan.minX;
+    int const maxX = task.plan.maxX;
+    int const minZ = task.plan.minZ;
+    int const maxZ = task.plan.maxZ;
+    int const minY = task.plan.minY;
+    int const maxY = task.plan.maxY;
+
+    int const minSubX = minX >> 4;
+    int const maxSubX = maxX >> 4;
+    int const minSubZ = minZ >> 4;
+    int const maxSubZ = maxZ >> 4;
+    int const minSubY = minY >> 4;
+    int const maxSubY = maxY >> 4;
+
+    int const subCountX = maxSubX - minSubX + 1;
+    int const subCountZ = maxSubZ - minSubZ + 1;
+    int const subCountY = maxSubY - minSubY + 1;
+    int64_t const totalSubChunks = static_cast<int64_t>(subCountX) * subCountZ * subCountY;
+
+    // 当开启 SubChunk 粗筛时，按 SubChunk 步长推进
+    if (cfg.subchunkCulling) {
+        int64_t budget = kBlocksPerTickBudget;
+        BlockChangeContext context{};
+
+        while (task.finalCursor < totalSubChunks && budget > 0) {
+            int64_t const subIdx = task.finalCursor;
+
+            int const sx = minSubX + static_cast<int>(subIdx % subCountX);
+            int const sz = minSubZ + static_cast<int>((subIdx / subCountX) % subCountZ);
+            int const sy = minSubY + static_cast<int>(subIdx / (subCountX * subCountZ));
+
+            int const boxX0 = std::max(minX, sx << 4);
+            int const boxX1 = std::min(maxX, (sx << 4) + 15);
+            int const boxZ0 = std::max(minZ, sz << 4);
+            int const boxZ1 = std::min(maxZ, (sz << 4) + 15);
+            int const boxY0 = std::max(minY, sy << 4);
+            int const boxY1 = std::min(maxY, (sy << 4) + 15);
+
+            BlockPos const samplePos{boxX0, boxY0, boxZ0};
+
+            // 检查对应区块是否完全加载
+            if (!isRegionLoaded(*source, BlockPos{boxX0, boxY0, boxZ0}, BlockPos{boxX1, boxY1, boxZ1})) {
+                loadChunksForRange(*source, boxX0, boxX1, boxZ0, boxZ1);
+                if (!isRegionLoaded(*source, BlockPos{boxX0, boxY0, boxZ0}, BlockPos{boxX1, boxY1, boxZ1})) {
+                    // 区块未加载：等待下个 tick 再扫描该 SubChunk
+                    return;
+                }
+            }
+
+            // O(1) 块级粗筛：如果整个 SubChunk 是纯空气，直接跳过！
+            if (!isSubChunkUniformAir(*source, samplePos, *airPtr)) {
+                // 非纯空气（可能残留方块或水），对相交区域精细清理
+                for (int x = boxX0; x <= boxX1; ++x) {
+                    for (int z = boxZ0; z <= boxZ1; ++z) {
+                        for (int y = boxY0; y <= boxY1; ++y) {
+                            --budget;
+                            BlockPos const pos{x, y, z};
+                            auto const& block = source->getBlock(pos);
+                            if (!block.isAir() && !isProtectedBlock(block, y, task.plan.dimId)) {
+                                if (y <= worldMinY(task.plan.dimId)) {
+                                    log::get().error(
+                                        "[bedrock] 任务 #{} 终检试图在世界最低层写入 ({}, {}, {})，已拦截。",
+                                        task.id,
+                                        pos.x,
+                                        pos.y,
+                                        pos.z
+                                    );
+                                } else {
+                                    source->setBlock(pos, *airPtr, 2, nullptr, context);
+                                    ++task.finalRemoved;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ++task.finalCursor;
+        }
+
+        if (task.finalCursor >= totalSubChunks) {
+            task.finalizing      = false;
+            task.finalSweepDone  = true;
+            log::get().info("任务 #{} 终检完成（SubChunk 粗筛模式），清除残留方块 {} 块。", task.id, task.finalRemoved);
+        }
+        return;
+    }
+
+    // 回退模式：逐格扫描
     int64_t const w = std::max<int64_t>(1, task.plan.width());
     int64_t const d = std::max<int64_t>(1, task.plan.depth());
     int64_t const h = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
@@ -868,8 +1012,18 @@ void TaskManager::runFinalSweep(SweepTask& task) {
 
         // 只删"非空气且非受保护"，底部基岩等依旧不动
         if (!block.isAir() && !isProtectedBlock(block, y, task.plan.dimId)) {
-            source->setBlock(pos, *airPtr, 3, nullptr, context);
-            ++task.finalRemoved;
+            if (y <= worldMinY(task.plan.dimId)) {
+                log::get().error(
+                    "[bedrock] 任务 #{} 终检试图在世界最低层写入 ({}, {}, {})，已拦截。",
+                    task.id,
+                    pos.x,
+                    pos.y,
+                    pos.z
+                );
+            } else {
+                source->setBlock(pos, *airPtr, 2, nullptr, context);
+                ++task.finalRemoved;
+            }
         }
 
         ++task.finalCursor;
@@ -878,7 +1032,7 @@ void TaskManager::runFinalSweep(SweepTask& task) {
     if (task.finalCursor >= total) {
         task.finalizing      = false;
         task.finalSweepDone  = true;
-        log::get().info("任务 #{} 终检完成，清除残留方块 {} 块。", task.id, task.finalRemoved);
+        log::get().info("任务 #{} 终检完成（逐格扫描模式），清除残留方块 {} 块。", task.id, task.finalRemoved);
     }
 }
 
@@ -903,9 +1057,6 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
     }
 
     int const totalChunks = task.chunksPerLayer();
-    int const cw  = task.plan.chunked ? task.plan.chunkWidth : task.plan.width();
-    int const cd  = task.plan.chunked ? task.plan.chunkDepth : task.plan.depth();
-    int const nx  = task.plan.chunked ? (task.plan.width() + cw - 1) / cw : 1;
     int64_t skippedChunks = 0;
     int     skippedLayers = 0;
 
@@ -951,11 +1102,8 @@ void TaskManager::advanceEmptyUnits(SweepTask& task) {
             continue; // 整层都是空的：不消耗倒计时，继续看下一层
         }
 
-        int const ci = task.chunkIndex;
-        int const x0 = task.plan.minX + (ci % nx) * cw;
-        int const z0 = task.plan.minZ + (ci / nx) * cd;
-        int const x1 = std::min(x0 + cw - 1, task.plan.maxX);
-        int const z1 = std::min(z0 + cd - 1, task.plan.maxZ);
+        int x0 = 0, x1 = 0, z0 = 0, z1 = 0;
+        task.getChunkBounds(task.chunkIndex, x0, x1, z0, z1);
         int const y  = task.plan.layerY(task.layersDone);
 
         if (!cfg.skipEmptyChunks
@@ -1050,6 +1198,15 @@ void TaskManager::stepTask(SweepTask& task) {
     }
 
     clearUnit(task);
+
+    // 预算饱和推进：如果分块无需等待冷却且本层还有后续分块，连续清扫，避免浪费整秒
+    while (task.chunkCooldown <= 0 && task.chunkIndex < task.chunksPerLayer() && !task.finished()) {
+        int const prevChunk = task.chunkIndex;
+        clearUnit(task);
+        if (task.chunkIndex == prevChunk) {
+            break; // 未推进（可能是分块内部跨预算分段，或等待区块加载），退出循环
+        }
+    }
 
     if (owner) {
         updateBossBar(task, *owner);
@@ -1324,6 +1481,22 @@ bool isRegionLoaded(BlockSource& source, BlockPos const& min, BlockPos const& ma
     return source.areChunksFullyLoaded(min, max);
 }
 
+/// 检查给定坐标所在的 SubChunk 是否已经全部是空气（用于 O(1) 块级粗筛）
+bool isSubChunkUniformAir(BlockSource& source, BlockPos const& pos, Block const& air) {
+    LevelChunk* lc = source.getChunkAt(pos);
+    if (!lc) {
+        return false;
+    }
+
+    int const subYIndex = (pos.y - lc->mMin->y) >> 4;
+    auto const& subchunks = lc->mSubChunks.get();
+    if (subYIndex < 0 || subYIndex >= static_cast<int>(subchunks.size())) {
+        return false;
+    }
+
+    return subchunks[static_cast<size_t>(subYIndex)].isUniform(air);
+}
+
 bool isChunkEmptyAtLayer(
     BlockSource& source,
     int          dimId,
@@ -1337,6 +1510,16 @@ bool isChunkEmptyAtLayer(
     // 未加载时区块内的方块一律读成空气，绝不能据此判定"无需清理"
     if (!isRegionLoaded(source, BlockPos{x0, y, z0}, BlockPos{x1, y, z1})) {
         return false;
+    }
+
+    auto const& cfg = ConfigManager::getInstance().get();
+    Block const* airPtr = airBlockPtr();
+
+    // 若分块位于同一 SubChunk 内且开启了粗筛，O(1) 判定
+    if (cfg.subchunkCulling && airPtr && ((x0 >> 4) == (x1 >> 4)) && ((z0 >> 4) == (z1 >> 4))) {
+        if (isSubChunkUniformAir(source, BlockPos{x0, y, z0}, *airPtr)) {
+            return true;
+        }
     }
 
     for (int x = x0; x <= x1; ++x) {

@@ -321,11 +321,21 @@ void openManage(Player& player, SweepTask& task) {
         auto const info = describePhase(task);
 
         if (info.phase == BarPhase::Finalizing) {
-            int64_t const w     = std::max<int64_t>(1, task.plan.width());
-            int64_t const d     = std::max<int64_t>(1, task.plan.depth());
-            int64_t const h     = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
-            int64_t const total = w * d * h;
-            int           pct   = total > 0 ? (int)((double)task.finalCursor * 100.0 / (double)total) : 100;
+            auto const& cfg = ConfigManager::getInstance().get();
+            int pct = 100;
+            if (cfg.subchunkCulling) {
+                int const subCountX = (task.plan.maxX >> 4) - (task.plan.minX >> 4) + 1;
+                int const subCountZ = (task.plan.maxZ >> 4) - (task.plan.minZ >> 4) + 1;
+                int const subCountY = (task.plan.maxY >> 4) - (task.plan.minY >> 4) + 1;
+                int64_t const total = static_cast<int64_t>(subCountX) * subCountZ * subCountY;
+                pct = total > 0 ? (int)((double)task.finalCursor * 100.0 / (double)total) : 100;
+            } else {
+                int64_t const w     = std::max<int64_t>(1, task.plan.width());
+                int64_t const d     = std::max<int64_t>(1, task.plan.depth());
+                int64_t const h     = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
+                int64_t const total = w * d * h;
+                pct = total > 0 ? (int)((double)task.finalCursor * 100.0 / (double)total) : 100;
+            }
             content += "当前：收尾清理 " + percentText(std::clamp(pct, 0, 100));
         } else if (info.phase == BarPhase::Clearing) {
             content += "当前：清理中";
