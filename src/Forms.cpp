@@ -294,7 +294,9 @@ void openPayment(Player& player, SweepPlan plan) {
 
         TaskManager::getInstance().storeBill(bill);
         SelectionManager::getInstance().clear(p);
-        p.sendMessage("§6[领地清扫] 已挂起账单，回到本领地使用木棍点击地面即可继续支付。");
+        p.sendMessage(
+            "§6[领地清扫] 已挂起账单。回到本领地用手持木棍点击地面，在菜单中选择「支付待支付账单」即可继续支付。"
+        );
     });
 
     form.appendButton("§0关闭任务", [](Player& p) {
@@ -378,9 +380,10 @@ void openManage(Player& player, SweepTask& task) {
 
     form.appendButton("§0停止任务", [id](Player& p) { openKillConfirm(p, id); });
 
-    // 同一领地有多个任务时，提供返回列表的入口
+    // 同一领地有多个任务或存在待支付账单时，提供返回选择菜单的入口
     int64_t const landKey = task.plan.landId;
-    if (TaskManager::getInstance().tasksOfLand(landKey).size() > 1) {
+    if (TaskManager::getInstance().tasksOfLand(landKey).size() > 1
+        || TaskManager::getInstance().billOfLand(landKey) != nullptr) {
         form.appendButton("§0返回任务列表", [landKey](Player& p) {
             auto land = resolveLandUnderPlayer(p);
             if (!land || land->key != landKey) {
@@ -452,6 +455,13 @@ void openBill(Player& player, PendingBill const& bill) {
         target.name = p.getRealName();
         target.uuid = p.getUuid();
 
+        // 与 openPayment 一致：扣款前再校验名额，避免"钱扣了、任务建不出来"
+        if (auto reject = TaskManager::getInstance().checkCreateAllowed(p, plan.landId, true); !reject.empty()) {
+            p.sendMessage("§c[领地清扫] " + reject);
+            p.sendMessage("§7本次未扣款。");
+            return;
+        }
+
         if (!service.hasEnough(target, plan.totalPrice)) {
             p.sendMessage("§c余额不足，无法支付该账单。");
             openPayment(p, plan);
@@ -497,7 +507,7 @@ void openTaskList(Player& player) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. 木棍智能菜单
+// 8. 领地任务选择菜单（木棍点击多任务 / 有账单时进入）
 // ---------------------------------------------------------------------------
 
 void openTaskPicker(Player& player, PlayerLand const& land) {
@@ -524,6 +534,26 @@ void openTaskPicker(Player& player, PlayerLand const& land) {
                 openManage(p, *found);
             } else {
                 p.sendMessage("§c[领地清扫] 任务不存在或已结束。");
+            }
+        });
+    }
+
+    // 同一领地可能同时存在"任务 + 待支付账单"（多任务放开后才出现的组合），
+    // 账单必须在这里给入口，否则木棍只会命中任务分支，账单永远付不掉。
+    if (auto const* bill = manager.billOfLand(land.key); bill) {
+        int64_t const amount  = bill->plan.totalPrice;
+        int64_t const landKey = land.key;
+        form.appendButton("§6支付待支付账单 · " + money(amount), [landKey](Player& p) {
+            auto current = resolveLandUnderPlayer(p);
+            if (!current || current->key != landKey) {
+                p.sendMessage("§c[领地清扫] 你已不在该领地内，请回到领地后再支付。");
+                return;
+            }
+            // 表单可能停留一段时间：重新取一次账单，避免支付已被消费的旧账单
+            if (auto const* latest = TaskManager::getInstance().billOfLand(landKey); latest) {
+                openBill(p, *latest);
+            } else {
+                p.sendMessage("§7[领地清扫] 该账单已不存在（可能已支付或已关闭）。");
             }
         });
     }

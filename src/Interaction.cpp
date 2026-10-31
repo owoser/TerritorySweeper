@@ -194,8 +194,16 @@ void handleStickUse(Player& player, BlockPos const& pos) {
     }
 
     if (!context.tasks.empty()) {
-        if (context.tasks.size() > 1) {
-            TS_DBG("[interact] 领地#{} 有 {} 个任务 → 打开任务选择", context.land->key, context.tasks.size());
+        // 领地内同时有待支付账单时，也要进选择菜单：否则账单被任务分支永久遮挡，
+        // "任务 + 账单"共存（多任务放开后才会出现）时账单将无法支付。
+        bool const needPicker = context.tasks.size() > 1 || context.bill != nullptr;
+        if (needPicker) {
+            TS_DBG(
+                "[interact] 领地#{} 有 {} 个任务 / 账单={} → 打开选择菜单",
+                context.land->key,
+                context.tasks.size(),
+                context.bill ? "是" : "否"
+            );
             form::openTaskPicker(player, *context.land);
         } else {
             TS_DBG("[interact] 命中任务 #{} → 打开管理面板", context.tasks.front()->id);
