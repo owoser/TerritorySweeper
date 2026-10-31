@@ -98,16 +98,15 @@ target("TerritorySweeper")
     -- 仅链接 LeviLamina 与 sqlite3；跨插件调用全部走运行时符号解析（详见 Compat.cpp）
     add_packages("levilamina", "sqlite3")
 
-    -- iListenAttentively：头文件内置 + 构建期生成导入库，使用延迟加载；
+    -- iListenAttentively：头文件内置 + 构建期生成导入库（见下方 on_load），使用延迟加载；
     -- 缺失该插件时本插件仍能正常加载（只是不再拦截液体流入）。
-    -- 注意：延迟加载开关**不能**用 add_ldflags 声明 —— @levibuildscript/linkrule 会用自己的
-    -- 链接步骤覆盖 ldflags（实测链接命令行里没有 /DELAYLOAD），因此开关写在
-    -- src/LiquidGuard.cpp 的 #pragma comment(linker, "/delayload:...") 里。
     add_includedirs("third_party/iListenAttentively/src")
     add_linkdirs("third_party/lib")
     add_links("ILA")
-    -- 延迟加载开关必须走 shflags：xmake 的 ldflags 不会进入 @levibuildscript/linkrule 的链接命令行
-    -- （该规则自己也是用 shflags 注入 /DELAYLOAD:bedrock_runtime.dll 的）。
+    -- 延迟加载开关必须走 shflags，两个已验证的坑：
+    --   ① add_ldflags 无效 —— @levibuildscript/linkrule 的链接步骤只保留 shflags
+    --      （它自己也是用 on_config 往 shflags 里塞 /DELAYLOAD:bedrock_runtime.dll）；
+    --   ② #pragma comment(linker, "/delayload:...") 无效 —— /DELAYLOAD 不在 .drectve 支持列表里。
     -- delayimp.lib 由 link.exe 在出现 /DELAYLOAD 时自动链接，无需显式声明。
     add_shflags("/DELAYLOAD:iListenAttentively.dll")
 
