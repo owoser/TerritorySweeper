@@ -106,6 +106,13 @@ void setPoint(Player& player, CommandOutput& output, int which, BlockPos pos) {
         return;
     }
 
+    // 选区已经绑定在别的领地上：不能把当前领地的坐标写成它的选点
+    if (auto state = SelectionManager::getInstance().get(player); state && state->active && state->landId != land->key) {
+        output.error("当前选区属于另一块领地，请回到该领地继续选点，或使用 /ts cancel 取消。");
+        player.sendMessage("§c[领地清扫] 当前选区属于另一块领地，请回到该领地继续选点，或使用 §f/ts cancel§c 取消。");
+        return;
+    }
+
     // 未点 A 就先执行指令时，自动开启选点
     if (!SelectionManager::getInstance().get(player)) {
         auto reject = TaskManager::getInstance().checkCreateAllowed(player, land->key);
@@ -161,6 +168,12 @@ void handleOk(Player& player, CommandOutput& output) {
     if (!state || !state->complete()) {
         output.error("选区尚未完成，请先设置点 A 与点 B。");
         player.sendMessage("§c[领地清扫] 选区尚未完成，请先设置点 A 与点 B。");
+        return;
+    }
+
+    if (state->landId != land->key) {
+        output.error("选区属于另一块领地，请回到该领地再确认，或使用 /ts cancel 取消。");
+        player.sendMessage("§c[领地清扫] 选区属于另一块领地，请回到该领地再确认，或使用 §f/ts cancel§c 取消。");
         return;
     }
 
