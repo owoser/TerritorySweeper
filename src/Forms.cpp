@@ -186,7 +186,7 @@ void openCostDetail(Player& player, SweepPlan plan) {
                            : "不分块";
 
     std::string content =
-        "收费等级：" + plan.levelname + "\n"
+        "选区大小：" + planSizeText(plan) + "（收费档位 " + plan.levelname + "）\n"
         "经济系统：" + economy::EconomyService::getInstance().describe() + "\n"
         "是否分块清理：" + std::string(plan.chunked ? "是" : "否") + "\n"
         "分块矩阵：" + matrix + "\n"
@@ -333,6 +333,7 @@ void openManage(Player& player, SweepTask& task) {
     content += std::string{"状态："} + toString(task.state) + "\n";
     content += "范围：X " + std::to_string(task.plan.minX) + "~" + std::to_string(task.plan.maxX) + "  Z "
              + std::to_string(task.plan.minZ) + "~" + std::to_string(task.plan.maxZ) + "\n";
+    content += "大小：" + planSizeText(task.plan) + "（收费档位 " + task.plan.levelname + "）\n";
 
     if (task.state == TaskState::Running) {
         auto const info = describePhase(task);
@@ -446,7 +447,7 @@ void openBill(Player& player, PendingBill const& bill) {
 
     std::string content =
         "§6本领地存在待支付账单" + std::string{billId > 0 ? " #" + std::to_string(billId) : ""} + "\n"
-        "收费等级：" + plan.levelname + "\n"
+        "实际选区：" + planSizeText(plan) + "（收费档位 " + plan.levelname + "）\n"
         "层数：" + std::to_string(plan.layerCount) + " 层\n"
         "方向：" + toString(plan.direction) + "\n"
         "范围：X " + std::to_string(plan.minX) + "~" + std::to_string(plan.maxX) + "  Z "
@@ -573,7 +574,7 @@ void openLandTaskList(Player& player, PlayerLand const& land) {
         int64_t const billId = bill->id;
 
         std::string line1 = "§0账单#" + std::to_string(billId) + " · 待支付";
-        std::string line2 = "§0" + bill->plan.levelname + " · " + std::to_string(bill->plan.layerCount) + " 层 · "
+        std::string line2 = "§0" + planSizeText(bill->plan) + " · " + std::to_string(bill->plan.layerCount) + " 层 · "
                           + money(bill->plan.totalPrice);
 
         form.appendButton(line1 + "\n" + line2, [billId](Player& p) {

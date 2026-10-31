@@ -548,8 +548,8 @@ std::string TaskManager::listBills() const {
     std::string out;
     for (auto const& bill : mBills) {
         out += " - [待支付] 账单#" + std::to_string(bill.id) + " 领地#" + std::to_string(bill.plan.landId)
-             + " 领主 " + bill.ownerName + " 金额 " + std::to_string(bill.plan.totalPrice) + " 层数 "
-             + std::to_string(bill.plan.layerCount) + "\n";
+             + " 领主 " + bill.ownerName + " 选区 " + planSizeText(bill.plan) + " 金额 "
+             + std::to_string(bill.plan.totalPrice) + " 层数 " + std::to_string(bill.plan.layerCount) + "\n";
     }
     return out;
 }
@@ -560,9 +560,9 @@ std::string TaskManager::listTasks() const {
     }
     std::string out;
     for (auto const& task : mTasks) {
-        out += " - #" + std::to_string(task.id) + " " + task.ownerName + " | " + toString(task.state) + " | 进度 "
-             + percentText(task.progressPercent()) + " (" + std::to_string(task.layersDone) + "/"
-             + std::to_string(task.plan.layerCount) + " 层)\n";
+        out += " - #" + std::to_string(task.id) + " " + task.ownerName + " | " + toString(task.state) + " | 选区 "
+             + planSizeText(task.plan) + " | 进度 " + percentText(task.progressPercent()) + " ("
+             + std::to_string(task.layersDone) + "/" + std::to_string(task.plan.layerCount) + " 层)\n";
     }
     return out;
 }
@@ -1761,6 +1761,12 @@ int64_t computeRefund(SweepTask const& task) {
 }
 
 std::string percentText(int value) { return std::to_string(value) + "％"; }
+
+std::string planSizeText(SweepPlan const& plan) {
+    // 用实际坐标范围算尺寸：levelname 是收费档位名，不能当尺寸用
+    return std::to_string(std::max(0, plan.maxX - plan.minX + 1)) + "×"
+         + std::to_string(std::max(0, plan.maxZ - plan.minZ + 1));
+}
 
 PhaseInfo describePhase(SweepTask const& task) {
     PhaseInfo info;

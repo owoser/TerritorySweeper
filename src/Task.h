@@ -140,6 +140,10 @@ enum class LeaveState {
 /// 玩家可见文本里的百分比。客户端会吞掉 ASCII '%'，统一用全角 '％'
 [[nodiscard]] std::string percentText(int value);
 
+/// 选区实际尺寸文本，如 "8×9"（宽 × 深）。
+/// 注意：不要用 plan.levelname（那是收费档位名，不是尺寸）。
+[[nodiscard]] std::string planSizeText(SweepPlan const& plan);
+
 /// 任务当前所处的阶段（BossBar 与管理面板共用同一套判定）
 enum class BarPhase {
     Clearing,       ///< 正在清理
