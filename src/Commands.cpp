@@ -64,6 +64,17 @@ void handleNew(Player& player, CommandOutput& output) {
         return;
     }
 
+    // 已在选点模式：先提示续选（这一步不能被名额检查挡住，否则选点途中再执行 /ts new
+    // 会收到"名额已满"，看起来像选点失效）
+    if (auto existing = SelectionManager::getInstance().get(player); existing && existing->active) {
+        std::string a = existing->hasPos1 ? coordinateText(existing->pos1) : "未设置";
+        std::string b = existing->hasPos2 ? coordinateText(existing->pos2) : "未设置";
+        output.success("已在选点模式。");
+        player.sendMessage("§e[领地清扫] 已在选点模式：点 A " + a + "，点 B " + b);
+        player.sendMessage("§7如需重新开始或改回管理任务，请先 §f/ts cancel§7 取消本次选点。");
+        return;
+    }
+
     auto reject = TaskManager::getInstance().checkCreateAllowed(player, land->key);
     if (!reject.empty()) {
         output.error(reject);
@@ -71,20 +82,22 @@ void handleNew(Player& player, CommandOutput& output) {
         return;
     }
 
-    // 已在选点模式：提示当前进度，不重置已选的点
-    if (auto existing = SelectionManager::getInstance().get(player); existing && existing->active) {
-        std::string a = existing->hasPos1 ? coordinateText(existing->pos1) : "未设置";
-        std::string b = existing->hasPos2 ? coordinateText(existing->pos2) : "未设置";
-        output.success("已在选点模式。");
-        player.sendMessage("§e[领地清扫] 已在选点模式：点 A " + a + "，点 B " + b);
-        return;
-    }
-
     SelectionManager::getInstance().begin(player, *land);
 
     output.success("已进入选点模式。");
     player.sendMessage("§e[领地清扫] 已开启领地边框显示。请使用 §f木棍§e 点击第一个方块设置点 A。");
-    player.sendMessage("§7（也可以使用 /ts pos1 与 /ts pos2 直接设置坐标）");
+    player.sendMessage("§7（也可以使用 /ts pos1 与 /ts pos2 直接设置坐标；§f/ts cancel§7 可取消选点）");
+}
+
+void handleCancel(Player& player, CommandOutput& output) {
+    auto state = SelectionManager::getInstance().get(player);
+    if (!state || !state->active) {
+        output.error("当前没有进行中的选点。");
+        return;
+    }
+    SelectionManager::getInstance().cancel(player);
+    output.success("已取消选点。");
+    player.sendMessage("§7[领地清扫] 已取消本次选点。");
 }
 
 void setPoint(Player& player, CommandOutput& output, int which, BlockPos pos) {
@@ -290,6 +303,7 @@ void registerCommands() {
                 "§f/ts pos1 [x y z]§7 设置点 A\n"
                 "§f/ts pos2 [x y z]§7 设置点 B\n"
                 "§f/ts ok§7 确认选区并打开任务菜单\n"
+                "§f/ts cancel§7 取消当前选点\n"
                 "§f/ts list§7 查看任务与账单列表\n"
                 "§f/ts start§7 继续本领地的全部任务\n"
                 "§f/ts stop§7 暂停本领地的全部任务\n"
@@ -346,6 +360,15 @@ void registerCommands() {
         [](CommandOrigin const& origin, CommandOutput& output, ll::command::EmptyParam const&, ::Command const&) {
             if (auto* player = asPlayer(origin, output); player) {
                 handleOk(*player, output);
+            }
+        }
+    );
+
+    // /ts cancel
+    cmd.overload<ll::command::EmptyParam>().text("cancel").execute(
+        [](CommandOrigin const& origin, CommandOutput& output, ll::command::EmptyParam const&, ::Command const&) {
+            if (auto* player = asPlayer(origin, output); player) {
+                handleCancel(*player, output);
             }
         }
     );

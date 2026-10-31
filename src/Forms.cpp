@@ -557,31 +557,4 @@ void openTaskPicker(Player& player, PlayerLand const& land) {
     form.sendTo(player);
 }
 
-void openSmartMenu(Player& player, PlayerLand const& land) {
-    auto& manager = TaskManager::getInstance();
-
-    auto tasks = manager.tasksOfLand(land.key);
-    if (!tasks.empty()) {
-        if (tasks.size() > 1) {
-            openTaskPicker(player, land);
-        } else {
-            openManage(player, *tasks.front());
-        }
-        return;
-    }
-
-    if (auto const* bill = manager.billOfLand(land.key); bill) {
-        openBill(player, *bill);
-        return;
-    }
-
-    auto selection = SelectionManager::getInstance().get(player);
-    if (selection && selection->complete() && selection->landId == land.key) {
-        openDirection(player, land, *selection);
-        return;
-    }
-
-    player.sendMessage("§e[领地清扫] 请先用 §f木棍§e 依次点击两个方块选择点 A 与点 B，再点击地面打开任务菜单。");
-}
-
 } // namespace ts::form

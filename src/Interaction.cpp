@@ -155,7 +155,9 @@ void handleStickUse(Player& player, BlockPos const& pos) {
     }
 
     if (!context.land) {
-        player.sendMessage("§c[领地清扫] 你不在任何领地内。");
+        player.sendMessage(
+            "§c[领地清扫] 你不在任何领地内。若正在选点，请回到领地继续，或使用 §f/ts cancel§c 取消本次选点。"
+        );
         return;
     }
     if (!context.land->canManage()) {
@@ -173,6 +175,24 @@ void handleStickUse(Player& player, BlockPos const& pos) {
         pos.z
     );
 
+    // 优先级：选点模式 > 已有任务 > 待支付账单。
+    // 选点必须最高：/ts new 之后木棍要继续设点，不能被"领地内已有任务"抢走点击，
+    // 否则玩家在选点途中点方块会直接弹出旧任务的管理面板。
+    if (context.selection && context.selection->active) {
+        if (context.selection->landId != context.land->key) {
+            player.sendMessage(
+                "§c[领地清扫] 你的选区属于另一块领地，请回到该领地继续选点，或使用 §f/ts cancel§c 取消。"
+            );
+            return;
+        }
+        if (context.selection->complete()) {
+            form::openDirection(player, *context.land, *context.selection);
+            return;
+        }
+        applyPoint(player, *context.land, pos);
+        return;
+    }
+
     if (!context.tasks.empty()) {
         if (context.tasks.size() > 1) {
             TS_DBG("[interact] 领地#{} 有 {} 个任务 → 打开任务选择", context.land->key, context.tasks.size());
@@ -183,21 +203,11 @@ void handleStickUse(Player& player, BlockPos const& pos) {
         }
         return;
     }
+
     if (context.bill) {
         form::openBill(player, *context.bill);
         return;
     }
-
-    if (!context.selection) {
-        return;
-    }
-
-    if (context.selection->complete()) {
-        form::openDirection(player, *context.land, *context.selection);
-        return;
-    }
-
-    applyPoint(player, *context.land, pos);
 }
 
 } // namespace
