@@ -9,7 +9,7 @@
 
 - **当前正式版本**：`v1.1.0`
 - **上个发版版本**：`v1.0.0` (commit `aadc689`)
-- **配置系统版本**：`config_version: 4`
+- **配置系统版本**：`config_version: 5`
 
 ---
 
@@ -179,13 +179,28 @@
   - **发现并修复的缺陷**：tag 校验正则最初只允许 `[0-9A-Za-z.]`，带内部连字符的预发布标识（`v0.0.0-ci-test`）被误拒；已放宽为 `(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?`（commit `bfd0fb1`）；
   - 验证结束后已删除临时 release 与 tag（本地与远端均已清理），仓库仅保留 `sdk-v26.51.9` 预发布资产与历史正式版本。
 
+### Commit 18: `fee542d` (2026-10-31 21:28:20 +0800)
+- **信息**：`feat(task): 支持同一领地多任务（修复 player_task_limit 看似失效）+ BossBar 槽位限流轮换`
+- **内容**：
+  - **根因一（代码闸门）**：`checkCreateAllowed()` 里「一领地一任务」判定排在玩家上限判定之前，同领地建第二个任务必然命中该条，`player_task_limit` 根本没机会参与判定；现改为 `allow_multi_task_per_land`（默认开），关闭后恢复旧限制。
+  - **根因二（重启去重）**：`db::loadTasks()` 按 `land_id` 去重，重启会把同领地的第 2、3 个任务静默丢弃；已彻底移除该去重（表结构 `tasks.id` 主键 + `land_id` 索引天然支持多行）。
+  - **诊断增强**：全局上限 / 玩家上限的拒绝文案改为「当前数量/上限」，并在旧限制命中时带上任务 ID；启动日志增加「同领地多任务=开/关、BossBar上限=N条/Ns」。
+  - **查询与命令**：新增 `tasksOfLand()` / `tasksOfPlayer()`；`/ts stop` / `/ts start` 作用于该领地全部任务；`/ts kill [任务ID]` 支持多任务（无参且多任务时列出 ID 并要求指定，且校验任务属于当前领地）。
+  - **表单与交互**：新增 `openTaskPicker()`——同领地多任务时先选任务再进管理面板，并提供「新建清扫任务」入口；管理面板在该领地有多个任务时提供「返回任务列表」；木棍点击多任务领地时进入选择菜单。
+  - **BossBar 槽位看板**：固定槽位 `bar-slot-<i>`，同屏条数受 `bossbar_max_bars`（默认 2）限制；暂停任务优先钉住（保留释放倒计时），其余槽位按 `bossbar_rotate_seconds`（默认 5s）轮换；槽位内容切换只发 `UpdateName/UpdatePercent`（不重建，无闪烁）；表现层连续异常 3 次后停用该玩家看板。
+  - **线框**：`task-frame` 只跟随「主任务」（排序后第一个），消除多任务共用一个 key 导致的互相覆盖闪烁。
+  - **调度健壮性**：`tick()` 第二阶段改为「先快照运行中任务 id，再按 id 查表推进」，避免 `stepTask` 内部 `finishTask` 触发 `vector::erase` 导致跳过相邻任务。
+  - **配置版本**：`config_version` **4 → 5**，新增 `allow_multi_task_per_land` / `bossbar_max_bars` / `bossbar_rotate_seconds` 三个字段（启动自动备份并重写，用户既有值保留）。
 ---
 
 ## ⚙️ 新增/变更配置项汇总表（对比 v1.0.0）
 
 | 配置项 | 类型 | 默认值 | 作用说明 |
 | :--- | :--- | :--- | :--- |
-| `config_version` | int | `4` | 配置文件结构版本号（升级触发备份重排） |
+| `config_version` | int | `5` | 配置文件结构版本号（升级触发备份重排） |
+| `allow_multi_task_per_land` | bool | `true` | 是否允许同一领地内同时存在多个清扫任务（关闭恢复旧限制） |
+| `bossbar_max_bars` | int | `2` | 同一玩家同时可见的 BossBar 条数上限（超出轮换） |
+| `bossbar_rotate_seconds` | int | `5` | BossBar 轮换间隔（秒） |
 | `block_liquid_inflow` | bool | `true` | 任务期间（含暂停）通过 ILA 阻止外部水/岩浆流入选区 |
 | `final_sweep` | bool | `true` | 所有层清完后执行全选区终检，清除残留悬空水块 |
 | `chunk_tail_padding` | int | `4` | 边缘分片吸纳阈值，余量 ≤ 4 格直接并入前一分片 |
