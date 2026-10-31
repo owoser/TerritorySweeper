@@ -16,6 +16,12 @@
 #include <memory>
 #include <vector>
 
+// 延迟加载：服务器未安装 iListenAttentively 时，本插件仍能正常加载（只降级液体拦截）。
+// 开关写在 xmake.lua 的 add_shflags("/DELAYLOAD:iListenAttentively.dll") 里：
+//   * 不能用 add_ldflags —— @levibuildscript/linkrule 的链接步骤只保留 shflags（它自己也用 shflags
+//     注入 /DELAYLOAD:bedrock_runtime.dll），ldflags 不会出现在链接命令行；
+//   * 也不能用 #pragma comment(linker, ...) —— /DELAYLOAD 不在 .drectve 支持的选项列表里，会被忽略。
+
 namespace ts::liquid {
 
 namespace {
@@ -25,11 +31,12 @@ using LiquidFlowBeforeEvent = ila::mc::world::level::block::LiquidFlowBeforeEven
 std::vector<std::shared_ptr<ll::event::ListenerBase>> gListeners;
 
 /// 启动自检：确认服务器上确实加载了 iListenAttentively，并打印版本/接口状态
-void reportEnvironment() {
+/// @return DLL 是否存在（不存在时调用方必须直接返回，绝不能继续使用延迟加载符号）
+bool reportEnvironment() {
     HMODULE module = GetModuleHandleW(L"iListenAttentively.dll");
     if (!module) {
         log::get().warn("[液体拦截] 未检测到 iListenAttentively.dll，液体流入拦截不可用（其它功能不受影响）");
-        return;
+        return false;
     }
 
     // LiquidFlowBeforeEvent::pos() 的导出符号，用于确认版本匹配
@@ -41,6 +48,7 @@ void reportEnvironment() {
         proc ? "已加载" : "已加载",
         proc ? "可用" : "缺失，可能是版本不匹配"
     );
+    return true;
 }
 
 void onLiquidFlow(LiquidFlowBeforeEvent& event) {
@@ -63,7 +71,11 @@ void onLiquidFlow(LiquidFlowBeforeEvent& event) {
 } // namespace
 
 void registerListener() {
-    reportEnvironment();
+    // 依赖缺失时必须在这里短路：emplaceListener 会首次解析延迟加载符号，
+    // 若 iListenAttentively.dll 不存在，延迟加载助手会抛出异常并拖垮插件。
+    if (!reportEnvironment()) {
+        return;
+    }
 
     if (!gListeners.empty()) {
         return;

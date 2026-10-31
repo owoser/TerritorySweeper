@@ -15,8 +15,11 @@
 *.log
 *.tmp
 
-# ILA 导入库（由 tools/gen-ila-lib.ps1 从已安装 DLL 生成）
-/third_party/lib/
+# ILA 导入库
+#   ILA.def  导出表（文本，入库跟踪；由 tools/gen-ila-lib.ps1 从已安装 DLL 反向导出）
+#   ILA.lib  由 xmake 在配置阶段从 ILA.def 自动生成，不入库
+/third_party/lib/*
+!/third_party/lib/ILA.def
 
 # Local agent instructions
 AGENT.md
