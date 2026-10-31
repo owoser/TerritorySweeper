@@ -166,9 +166,18 @@
   - 新增 `release-notes/` 目录约定与说明文档（发版前撰写 `<tag>.md`）；
   - `tooth.json`：修正占位仓库地址 `github.com/example/...` → `github.com/owoser/TerritorySweeper`，补登记 `iListenAttentively 0.17.*` 依赖。
 
-### Commit 16: `（本条提交）`
+### Commit 16: `532aa75` (2026-10-31 20:32:56 +0800)
 - **信息**：`docs: 记录 CI 体系与 LL 26.51.9 / 工具链升级（UNRELEASED.md）`
 - **内容**：把本次 CI 体系与工具链升级的完整事实（含 SDK 分发、ILA 导入库、延迟加载踩坑、发版流程变更）写入未发布迭代日志，作为下一次正式发版 Release Notes 的事实来源。
+
+### Commit 17: `（本条提交）`
+- **信息**：`docs: 记录 GitHub Actions 端到端验证结果与 tag 校验正则修复`
+- **内容**：
+  - **Build 工作流（main）绿灯**：run `41202439381`，耗时 3m37s。日志确认 `clang+llvm-23.1.4` 就位、`[levilamina] 已安装预编译 SDK 26.51.9（跳过源码构建）`、`[iListenAttentively] 已由 ILA.def 生成导入库 ILA.lib`，编译 41s 完成；
+  - **Release 工作流（tag）绿灯**：run `41202452761`，耗时 3m50s，验证流程为「校验 tag → 构建并注入 `TS_VERSION` → 校验 manifest 版本 → 打包 zip → 创建 Release」；
+  - **产物核验**：`TerritorySweeper-0.0.0-ci-test.zip` 内含 `TerritorySweeper/{manifest.json,TerritorySweeper.dll}`，`manifest.json` 的 `version` 为 `0.0.0-ci-test`（tag 注入生效），Release 自动标记为 pre-release，`tooth.json` 版本不一致与「缺少 release-notes」两条 warning 均按设计触发；
+  - **发现并修复的缺陷**：tag 校验正则最初只允许 `[0-9A-Za-z.]`，带内部连字符的预发布标识（`v0.0.0-ci-test`）被误拒；已放宽为 `(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?`（commit `bfd0fb1`）；
+  - 验证结束后已删除临时 release 与 tag（本地与远端均已清理），仓库仅保留 `sdk-v26.51.9` 预发布资产与历史正式版本。
 
 ---
 
