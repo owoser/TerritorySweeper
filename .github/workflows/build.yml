@@ -1,0 +1,84 @@
+name: Build
+
+# main 分支 / PR 的编译校验：只构建并上传产物，不产生 Release。
+# 正式发版由 release.yml（push tag v*）负责。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (windows-x64)
+    # windows-2022 = VS 2022 / MSVC 14.44，与本地验证通过的工具链一致。
+    # LeviLamina SDK 由 xmake-repo-extra 以预编译产物分发（省掉每次编译上游本体），
+    # 见 xmake-repo-extra/packages/l/levilamina/xmake.lua。
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      # 与本地验证通过的组合保持一致：MSVC 14.44（VS 2022）+ clang-cl 23.x。
+      # clang 19 编译 LeviLamina 26.51.x 会在 MinecraftCommands.h 上触发
+      # "invalid application of 'sizeof' to an incomplete type"，clang 23 已修复该路径。
+      - name: Setup LLVM 23 (clang-cl)
+        uses: ZhongRuoyu/setup-llvm@v0
+        with:
+          llvm-version: 23
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          xmake --version
+          clang-cl --version
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/.xmake
+          key: xmake-v3-${{ runner.os }}-${{ hashFiles('xmake.lua', 'xmake-repo-extra/**/xmake.lua') }}
+          restore-keys: |
+            xmake-v3-${{ runner.os }}-
+
+      - name: Update xmake repositories
+        run: xmake repo -u
+
+      - name: Configure
+        run: xmake f -c -p windows -a x64 -m release --toolchain=clang-cl -y
+
+      - name: Build
+        run: xmake -y
+
+      # 依赖包构建失败时，真正的错误只写进 xmake 的 install.txt，GitHub 日志里只显示
+      # "install failed!"，所以失败时把它导出来。
+      - name: Dump install logs (on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA '.xmake\cache\packages'
+          if (Test-Path $root) {
+            Get-ChildItem $root -Recurse -Filter install.txt -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "===== $($_.FullName) ====="
+              Get-Content $_.FullName -Tail 300
+            }
+          } else {
+            Write-Host "未找到 xmake 包安装日志目录：$root"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TerritorySweeper-windows-x64
+          path: |
+            bin/TerritorySweeper/TerritorySweeper.dll
+            bin/TerritorySweeper/manifest.json
+          if-no-files-found: error

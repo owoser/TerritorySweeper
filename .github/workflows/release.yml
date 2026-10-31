@@ -1,0 +1,192 @@
+name: Release
+
+# 打 tag 即发布：推送 v1.2.3 会自动构建、打包并创建对应 Release。
+# 版本号的唯一来源就是这个 tag —— 构建时通过 TS_VERSION 注入 manifest.json，
+# 因此不需要同时手改 xmake.lua / manifest.json / tooth.json。
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (windows-x64)
+    # windows-2022 = VS 2022 / MSVC 14.44，与本地验证通过的工具链一致。
+    # LeviLamina SDK 由 xmake-repo-extra 以预编译产物分发（省掉每次编译上游本体），
+    # 见 xmake-repo-extra/packages/l/levilamina/xmake.lua。
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 用 PowerShell 而不是 bash：Windows runner 上的工作区可能是 CRLF，bash 脚本容易被 \r 干扰
+      - name: Validate tag
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
+            Write-Error "tag $tag 不是合法版本号，应形如 v1.2.3 或 v1.2.3-beta.1"
+            exit 1
+          }
+          Write-Host "版本号校验通过：$tag"
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      # 与本地验证通过的组合保持一致：MSVC 14.44（VS 2022）+ clang-cl 23.x。
+      # clang 19 编译 LeviLamina 26.51.x 会在 MinecraftCommands.h 上触发
+      # "invalid application of 'sizeof' to an incomplete type"，clang 23 已修复该路径。
+      - name: Setup LLVM 23 (clang-cl)
+        uses: ZhongRuoyu/setup-llvm@v0
+        with:
+          llvm-version: 23
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          xmake --version
+          clang-cl --version
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/.xmake
+          key: xmake-v3-${{ runner.os }}-${{ hashFiles('xmake.lua', 'xmake-repo-extra/**/xmake.lua') }}
+          restore-keys: |
+            xmake-v3-${{ runner.os }}-
+
+      - name: Update xmake repositories
+        run: xmake repo -u
+
+      # TS_VERSION 是 tag（如 v1.2.0），xmake.lua 会去掉前导 v 并写入 manifest.json
+      - name: Configure
+        run: xmake f -c -p windows -a x64 -m release --toolchain=clang-cl -y
+        env:
+          TS_VERSION: ${{ github.ref_name }}
+
+      - name: Build
+        run: xmake -y
+        env:
+          TS_VERSION: ${{ github.ref_name }}
+
+      - name: Dump install logs (on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA '.xmake\cache\packages'
+          if (Test-Path $root) {
+            Get-ChildItem $root -Recurse -Filter install.txt -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "===== $($_.FullName) ====="
+              Get-Content $_.FullName -Tail 300
+            }
+          }
+
+      # 校验版本注入是否真的生效（modpacker 会把 modVersion 写进 manifest.json）
+      - name: Verify version injection
+        shell: pwsh
+        run: |
+          $expected = '${{ github.ref_name }}' -replace '^[vV]', ''
+          $manifest = Get-Content 'bin/TerritorySweeper/manifest.json' -Raw | ConvertFrom-Json
+          Write-Host "manifest version = $($manifest.version) / tag 版本 = $expected"
+          if ($manifest.version -ne $expected) {
+            Write-Error "manifest.json 版本与 tag 不一致，说明 TS_VERSION 未生效"
+            exit 1
+          }
+
+      # bin/ 里同时有 .pdb，发布包只需要 dll + manifest.json（与历史 Release 结构一致）
+      - name: Package (TerritorySweeper/{dll,manifest.json})
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package/TerritorySweeper | Out-Null
+          Copy-Item bin/TerritorySweeper/TerritorySweeper.dll package/TerritorySweeper/
+          Copy-Item bin/TerritorySweeper/manifest.json           package/TerritorySweeper/
+          Get-ChildItem -Recurse package | Select-Object FullName, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TerritorySweeper-windows-x64
+          path: package/TerritorySweeper
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      # tooth.json 的版本不做自动改写（发布到 tooth 仓库时才需要同步），这里只提示
+      - name: Check tooth.json version
+        run: |
+          set -euo pipefail
+          tooth_ver="$(python3 -c "import json;print(json.load(open('tooth.json'))['version'])")"
+          if [ "$tooth_ver" != "${VERSION}" ]; then
+            echo "::warning::tooth.json 版本 ($tooth_ver) 与 tag 版本 (${VERSION}) 不一致，发布到 tooth 仓库前请同步"
+          fi
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: TerritorySweeper-windows-x64
+          path: package/TerritorySweeper
+
+      - name: Package zip
+        run: |
+          set -euo pipefail
+          cd package
+          zip -r "../TerritorySweeper-${VERSION}.zip" TerritorySweeper
+          cd ..
+          unzip -l "TerritorySweeper-${VERSION}.zip"
+
+      # 正式发行说明由人（或 Agent）在发版前写入 release-notes/<tag>.md，
+      # 内容以 UNRELEASED.md 为事实来源整理；缺失时回退 GitHub 自动生成说明。
+      - name: Check curated release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          if [ -f "release-notes/${GITHUB_REF_NAME}.md" ]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+            echo "--- release notes ---"
+            cat "release-notes/${GITHUB_REF_NAME}.md"
+          else
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未找到 release-notes/${GITHUB_REF_NAME}.md，将使用 GitHub 自动生成发行说明"
+          fi
+
+      - name: Create release (curated notes)
+        if: steps.notes.outputs.has_notes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: TerritorySweeper ${{ env.VERSION }}
+          body_path: release-notes/${{ github.ref_name }}.md
+          files: TerritorySweeper-${{ env.VERSION }}.zip
+          fail_on_unmatched_files: true
+          # v1.1.0-beta.1 这类带连字符的 tag 自动标记为预发布
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: false
+
+      - name: Create release (auto notes)
+        if: steps.notes.outputs.has_notes != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: TerritorySweeper ${{ env.VERSION }}
+          generate_release_notes: true
+          files: TerritorySweeper-${{ env.VERSION }}.zip
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: false
