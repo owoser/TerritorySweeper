@@ -109,7 +109,7 @@ void applyPoint(Player& player, PlayerLand const& land, BlockPos const& pos) {
 /// 一次木棍点击所对应的上下文；enabled 为 false 时调用方应完全静默
 struct StickContext {
     std::optional<PlayerLand>     land;
-    SweepTask*                    task{nullptr};
+    std::vector<SweepTask*>       tasks; ///< 该领地内的全部任务（允许多个）
     PendingBill*                  bill{nullptr};
     std::optional<SelectionState> selection;
     bool                          enabled{false};
@@ -131,13 +131,13 @@ StickContext resolveStickContext(Player& player) {
 
     if (auto land = resolveLandUnderPlayer(player); land) {
         auto& manager = TaskManager::getInstance();
-        context.task  = manager.taskOfLand(land->key);
+        context.tasks = manager.tasksOfLand(land->key);
         context.bill  = manager.billOfLand(land->key);
         context.land  = std::move(land);
     }
 
     bool const hasSelection = context.selection && context.selection->active;
-    context.enabled         = hasSelection || context.task != nullptr || context.bill != nullptr;
+    context.enabled         = hasSelection || !context.tasks.empty() || context.bill != nullptr;
     return context;
 }
 
@@ -173,9 +173,14 @@ void handleStickUse(Player& player, BlockPos const& pos) {
         pos.z
     );
 
-    if (context.task) {
-        TS_DBG("[interact] 命中任务 #{} → 打开管理面板", context.task->id);
-        form::openManage(player, *context.task);
+    if (!context.tasks.empty()) {
+        if (context.tasks.size() > 1) {
+            TS_DBG("[interact] 领地#{} 有 {} 个任务 → 打开任务选择", context.land->key, context.tasks.size());
+            form::openTaskPicker(player, *context.land);
+        } else {
+            TS_DBG("[interact] 命中任务 #{} → 打开管理面板", context.tasks.front()->id);
+            form::openManage(player, *context.tasks.front());
+        }
         return;
     }
     if (context.bill) {

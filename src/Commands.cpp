@@ -17,7 +17,9 @@
 #include "mc/server/commands/PlayerCommandOrigin.h"
 #include "mc/world/actor/player/Player.h"
 
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace ts::command {
 
@@ -154,22 +156,41 @@ void handleOk(Player& player, CommandOutput& output) {
     output.success("已打开任务菜单。");
 }
 
+/// 该领地任务的简要列表（多任务提示用）
+std::string describeLandTasks(std::vector<SweepTask*> const& tasks) {
+    std::string out;
+    for (auto* task : tasks) {
+        out += " - #" + std::to_string(task->id) + " " + toString(task->state) + " | 进度 "
+             + percentText(task->progressPercent()) + "\n";
+    }
+    return out;
+}
+
 void handleStart(Player& player, CommandOutput& output) {
     auto land = requireLand(player, output);
     if (!land) {
         return;
     }
-    auto* task = TaskManager::getInstance().taskOfLand(land->key);
-    if (!task) {
+
+    auto& manager = TaskManager::getInstance();
+    auto  tasks   = manager.tasksOfLand(land->key);
+    if (tasks.empty()) {
         output.error("本领地没有可继续的清扫任务。");
         return;
     }
-    if (task->state == TaskState::Running) {
-        output.error("任务已在运行中。");
+
+    int resumed = 0;
+    for (auto* task : tasks) {
+        if (task->state == TaskState::Paused && manager.resumeTask(task->id)) {
+            ++resumed;
+        }
+    }
+    if (resumed == 0) {
+        output.error("本领地的清扫任务都在运行中。");
         return;
     }
-    TaskManager::getInstance().resumeTask(task->id);
-    output.success("任务已继续。");
+    output.success("已继续 " + std::to_string(resumed) + " 个任务。");
+    player.sendMessage("§a[领地清扫] 已继续 " + std::to_string(resumed) + " 个任务。");
 }
 
 void handleStop(Player& player, CommandOutput& output) {
@@ -177,28 +198,65 @@ void handleStop(Player& player, CommandOutput& output) {
     if (!land) {
         return;
     }
-    auto* task = TaskManager::getInstance().taskOfLand(land->key);
-    if (!task) {
+
+    auto& manager = TaskManager::getInstance();
+    auto  tasks   = manager.tasksOfLand(land->key);
+    if (tasks.empty()) {
         output.error("本领地没有正在运行的清扫任务。");
         return;
     }
-    TaskManager::getInstance().pauseTask(task->id, "领主手动暂停");
-    output.success("任务已暂停。");
+
+    int paused = 0;
+    for (auto* task : tasks) {
+        if (task->state == TaskState::Running) {
+            manager.pauseTask(task->id, "领主手动暂停");
+            ++paused;
+        }
+    }
+    if (paused == 0) {
+        output.error("本领地的任务已全部处于暂停状态。");
+        return;
+    }
+    output.success("已暂停 " + std::to_string(paused) + " 个任务。");
+    player.sendMessage("§e[领地清扫] 已暂停 " + std::to_string(paused) + " 个任务。");
 }
 
-void handleKill(Player& player, CommandOutput& output) {
+void handleKill(Player& player, CommandOutput& output, std::optional<uint64_t> taskId) {
     auto land = requireLand(player, output);
     if (!land) {
         return;
     }
-    auto* task = TaskManager::getInstance().taskOfLand(land->key);
-    if (!task) {
+
+    auto& manager = TaskManager::getInstance();
+    auto  tasks   = manager.tasksOfLand(land->key);
+    if (tasks.empty()) {
         output.error("本领地没有可终止的清扫任务。");
         return;
     }
-    auto id = task->id;
-    TaskManager::getInstance().killTask(id, "领主通过 /ts kill 终止");
-    output.success("任务已终止。");
+
+    if (!taskId) {
+        if (tasks.size() > 1) {
+            std::string detail = "本领地有 " + std::to_string(tasks.size())
+                               + " 个清扫任务，请使用 /ts kill <任务ID> 指定要终止的任务：\n"
+                               + describeLandTasks(tasks);
+            output.error(detail);
+            player.sendMessage("§c[领地清扫] " + detail);
+            return;
+        }
+        taskId = tasks.front()->id;
+    }
+
+    auto* target = manager.taskById(*taskId);
+    if (target == nullptr || target->plan.landId != land->key) {
+        output.error("任务 #" + std::to_string(*taskId) + " 不属于当前领地。");
+        player.sendMessage("§c[领地清扫] 任务 #" + std::to_string(*taskId) + " 不属于当前领地。");
+        return;
+    }
+
+    uint64_t const id = target->id;
+    manager.killTask(id, "领主通过 /ts kill 终止");
+    output.success("任务 #" + std::to_string(id) + " 已终止。");
+    player.sendMessage("§c[领地清扫] 任务 #" + std::to_string(id) + " 已终止。");
 }
 
 } // namespace
@@ -208,6 +266,11 @@ struct PosArgs {
     int x;
     int y;
     int z;
+};
+
+/// /ts kill <id>
+struct IdArgs {
+    int id;
 };
 
 void registerCommands() {
@@ -228,9 +291,9 @@ void registerCommands() {
                 "§f/ts pos2 [x y z]§7 设置点 B\n"
                 "§f/ts ok§7 确认选区并打开任务菜单\n"
                 "§f/ts list§7 查看任务与账单列表\n"
-                "§f/ts start§7 继续任务\n"
-                "§f/ts stop§7 暂停任务\n"
-                "§f/ts kill§7 终止任务\n"
+                "§f/ts start§7 继续本领地的全部任务\n"
+                "§f/ts stop§7 暂停本领地的全部任务\n"
+                "§f/ts kill [任务ID]§7 终止任务（本领地有多个任务时必须带 ID）\n"
                 "§7也可以手持木棍点击方块与地面进行操作。"
             );
             output.success("已输出帮助信息。");
@@ -315,7 +378,18 @@ void registerCommands() {
     cmd.overload<ll::command::EmptyParam>().text("kill").execute(
         [](CommandOrigin const& origin, CommandOutput& output, ll::command::EmptyParam const&, ::Command const&) {
             if (auto* player = asPlayer(origin, output); player) {
-                handleKill(*player, output);
+                handleKill(*player, output, std::nullopt);
+            }
+        }
+    );
+    cmd.overload<IdArgs>().text("kill").required("id").execute(
+        [](CommandOrigin const& origin, CommandOutput& output, IdArgs const& args, ::Command const&) {
+            if (auto* player = asPlayer(origin, output); player) {
+                if (args.id <= 0) {
+                    output.error("任务 ID 必须是正整数。");
+                    return;
+                }
+                handleKill(*player, output, (uint64_t)args.id);
             }
         }
     );

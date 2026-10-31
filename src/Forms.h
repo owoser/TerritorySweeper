@@ -37,8 +37,12 @@ void openKillConfirm(Player& player, uint64_t taskId);
 /// 打开待支付账单面板
 void openBill(Player& player, PendingBill const& bill);
 
-/// 打开任务列表
+/// 打开任务列表（全服任务与账单）
 void openTaskList(Player& player);
+
+/// 打开"本领地任务选择"
+/// 同一领地存在多个任务时，先让玩家选择要管理的任务，并提供"新建清扫任务"入口
+void openTaskPicker(Player& player, PlayerLand const& land);
 
 /// 木棍交互入口：依据领地状态自动选择面板
 void openSmartMenu(Player& player, PlayerLand const& land);

@@ -20,7 +20,7 @@ struct PriceLevel {
  * 所有字段名与 config.json 中的键一一对应，缺省值即为默认配置。
  */
 struct Config {
-    int configVersion{4};
+    int configVersion{5};
 
     /// 调试模式：输出发包、任务推进、交互等详细日志（排查用，平时保持 false）
     bool debugEnabled{false};
@@ -41,6 +41,12 @@ struct Config {
     bool bossBarEnabled{true};
     /// BossBar 刷新方式：incremental（只发变化字段）/ recreate（每秒完整重建）
     std::string bossBarUpdateMode{"incremental"};
+    /// 允许同一领地内同时存在多个清扫任务（false = 恢复"一领地一任务"的旧限制）
+    bool allowMultiTaskPerLand{true};
+    /// 同一玩家同时可见的 BossBar 上限（超出的任务在槽位之间轮换展示）
+    int  bossBarMaxBars{2};
+    /// BossBar 轮换间隔（秒）
+    int  bossBarRotateSeconds{5};
     /// DebugShape 选区 / 任务区域线框
     bool regionFrameEnabled{true};
 

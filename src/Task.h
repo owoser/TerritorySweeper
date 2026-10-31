@@ -23,6 +23,7 @@ class Block;
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -107,7 +108,6 @@ struct SweepTask {
     int     offLandSeconds{0};
     int     missingOwnerSeconds{0}; ///< 连续找不到领主实体的秒数（去抖用）
     bool    ownerInLand{true};
-    bool    bossShown{false};
     bool    leavePaused{false};     ///< 是否因"离开领地/离线"而暂停（用于自动续跑）
     bool    layerHadWork{true};     ///< 当前层是否真的清过方块（空层不消耗倒计时）
     int     waitLoadedTicks{0};     ///< 当前分块等待区块加载的秒数（仅用于告警）
@@ -220,9 +220,12 @@ public:
     // ---------------- 查询 ----------------
     [[nodiscard]] int         runningOrPausedCount() const;
     [[nodiscard]] int         playerTaskCount(mce::UUID const& uuid) const;
-    [[nodiscard]] SweepTask*  taskOfLand(int64_t landId);
+    /// 该领地的第一个任务（仅用于"关闭同一领地多任务"时的冲突判定）
     [[nodiscard]] SweepTask const* taskOfLandConst(int64_t landId) const;
-    [[nodiscard]] SweepTask*  taskOfPlayer(mce::UUID const& uuid);
+    /// 该领地内的全部任务（按 id 升序）
+    [[nodiscard]] std::vector<SweepTask*> tasksOfLand(int64_t landId);
+    /// 该玩家的全部任务（按 id 升序）
+    [[nodiscard]] std::vector<SweepTask*> tasksOfPlayer(mce::UUID const& uuid);
     [[nodiscard]] SweepTask*  taskById(uint64_t id);
     [[nodiscard]] PendingBill* billOfLand(int64_t landId);
     [[nodiscard]] PendingBill const* billOfLand(int64_t landId) const;
@@ -266,12 +269,38 @@ private:
     void            clearUnit(SweepTask& task, int64_t& budget);
     /// 重建活跃任务所覆盖的空间区块网格索引（加速液体流入 O(1) 短路判定）
     void            rebuildActiveChunkGrid();
+    /// 兼容旧调用点：刷新该玩家的 BossBar 看板（含轮换与线框）
     void            updateBossBar(SweepTask& task, Player& player);
-    void            updateBossBarImpl(SweepTask& task, Player& player);
+    /// 该玩家任务的展示顺序：暂停优先（释放剩余时间升序）→ 运行中（id 升序）
+    [[nodiscard]] std::vector<SweepTask*> orderedTasksOfPlayer(mce::UUID const& uuid);
+    /// 刷新全部在线领主的看板（tick 末尾兜底，保证轮换持续）
+    void            refreshBoards();
+    /// 刷新单个玩家的槽位分配与线框
+    void            refreshBoard(Player& player);
+    /// 渲染一个槽位（首次 show，之后一律增量 update，避免轮换闪烁）
+    void            renderSlot(Player& player, int slotIndex, SweepTask& task, bool multi, bool rotating);
+    /// 线框只跟随"主任务"（排序后的第一个），切换时用同一 key 覆盖
+    void            refreshFrame(Player& player, SweepTask* primary);
     void            loadState();
     /// 按未完成比例退款，返回实际到账金额（0 表示无需退款或退款失败）
     int64_t         refundTask(SweepTask& task, std::string const& reason);
     [[nodiscard]] Player* findOwner(SweepTask const& task) const;
+
+    /// BossBar 单个槽位：固定 bossId 复用，内容轮换时只发增量更新
+    struct BarSlot {
+        uint64_t taskId{0}; ///< 0 表示空槽
+        bool     shown{false};
+    };
+
+    /// 单个玩家的 BossBar 看板
+    struct BarBoard {
+        std::vector<BarSlot> slots;        ///< 长度 = bossbar_max_bars
+        uint64_t             frameTaskId{0}; ///< 当前线框绑定的任务
+        bool                 frameDrawn{false};
+        int                  failures{0};  ///< 连续异常次数，>=3 停用该玩家看板
+    };
+
+    std::unordered_map<std::string, BarBoard> mBoards; ///< key = 玩家 UUID 字符串
 
     int                      mChunkLoadBudget{0}; ///< 本 tick 剩余的区块加载额度
     std::unordered_set<uint64_t> mActiveChunkKeys; ///< 空间哈希网格

@@ -369,6 +369,20 @@ void openManage(Player& player, SweepTask& task) {
     }
 
     form.appendButton("§0停止任务", [id](Player& p) { openKillConfirm(p, id); });
+
+    // 同一领地有多个任务时，提供返回列表的入口
+    int64_t const landKey = task.plan.landId;
+    if (TaskManager::getInstance().tasksOfLand(landKey).size() > 1) {
+        form.appendButton("§0返回任务列表", [landKey](Player& p) {
+            auto land = resolveLandUnderPlayer(p);
+            if (!land || land->key != landKey) {
+                p.sendMessage("§c[领地清扫] 请先回到领地内再查看任务列表。");
+                return;
+            }
+            openTaskPicker(p, *land);
+        });
+    }
+
     form.appendButton("§0关闭菜单", [](Player&) {});
 
     form.sendTo(player);
@@ -478,11 +492,73 @@ void openTaskList(Player& player) {
 // 8. 木棍智能菜单
 // ---------------------------------------------------------------------------
 
+void openTaskPicker(Player& player, PlayerLand const& land) {
+    auto& manager = TaskManager::getInstance();
+    auto  tasks   = manager.tasksOfLand(land.key);
+
+    std::string content = "§e" + land.land.name + "§r 共有 " + std::to_string(tasks.size()) + " 个清扫任务\n\n";
+    for (auto* task : tasks) {
+        content += " - #" + std::to_string(task->id) + " " + toString(task->state) + " | 进度 "
+                 + percentText(task->progressPercent()) + "（" + std::to_string(task->layersDone) + "/"
+                 + std::to_string(task->plan.layerCount) + " 层）\n";
+    }
+    content += "\n§7选择要管理的任务，或新建一个清扫任务。";
+
+    SimpleForm form("领地清扫任务");
+    form.setContent(content);
+
+    for (auto* task : tasks) {
+        uint64_t const id    = task->id;
+        std::string    label = "§0#" + std::to_string(id) + " · " + toString(task->state) + " · "
+                             + percentText(task->progressPercent());
+        form.appendButton(label, [id](Player& p) {
+            if (auto* found = TaskManager::getInstance().taskById(id); found) {
+                openManage(p, *found);
+            } else {
+                p.sendMessage("§c[领地清扫] 任务不存在或已结束。");
+            }
+        });
+    }
+
+    int64_t const landKey = land.key;
+    form.appendButton("§0新建清扫任务", [landKey](Player& p) {
+        // 菜单可能停留一段时间：这里重新解析脚下领地，避免用过期上下文
+        auto current = resolveLandUnderPlayer(p);
+        if (!current || current->key != landKey) {
+            p.sendMessage("§c[领地清扫] 你已不在该领地内，请回到领地后再操作。");
+            return;
+        }
+        if (!current->canManage()) {
+            p.sendMessage("§c[领地清扫] 只有领地主人或管理员可以使用该功能。");
+            return;
+        }
+        auto reject = TaskManager::getInstance().checkCreateAllowed(p, current->key);
+        if (!reject.empty()) {
+            p.sendMessage("§c" + reject);
+            return;
+        }
+        if (auto existing = SelectionManager::getInstance().get(p); existing && existing->active) {
+            p.sendMessage("§e[领地清扫] 已在选点模式，请继续设置点 A / 点 B。");
+            return;
+        }
+        SelectionManager::getInstance().begin(p, *current);
+        p.sendMessage("§e[领地清扫] 已进入选点模式，请使用 §f木棍§e 点击第一个方块设置点 A。");
+    });
+
+    form.appendButton("§0关闭", [](Player&) {});
+    form.sendTo(player);
+}
+
 void openSmartMenu(Player& player, PlayerLand const& land) {
     auto& manager = TaskManager::getInstance();
 
-    if (auto* task = manager.taskOfLand(land.key); task) {
-        openManage(player, *task);
+    auto tasks = manager.tasksOfLand(land.key);
+    if (!tasks.empty()) {
+        if (tasks.size() > 1) {
+            openTaskPicker(player, land);
+        } else {
+            openManage(player, *tasks.front());
+        }
         return;
     }
 

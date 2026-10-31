@@ -24,7 +24,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ctime>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ts {
 
@@ -376,23 +378,27 @@ SweepTask const* TaskManager::taskOfLandConst(int64_t landId) const {
     return nullptr;
 }
 
-SweepTask* TaskManager::taskOfLand(int64_t landId) {
+
+std::vector<SweepTask*> TaskManager::tasksOfLand(int64_t landId) {
+    std::vector<SweepTask*> out;
     for (auto& task : mTasks) {
         if (task.plan.landId == landId) {
-            return &task;
+            out.push_back(&task); // mTasks 按创建顺序存放（id 递增）
         }
     }
-    return nullptr;
+    return out;
 }
 
-SweepTask* TaskManager::taskOfPlayer(mce::UUID const& uuid) {
+std::vector<SweepTask*> TaskManager::tasksOfPlayer(mce::UUID const& uuid) {
+    std::vector<SweepTask*> out;
     for (auto& task : mTasks) {
         if (task.ownerUuid == uuid) {
-            return &task;
+            out.push_back(&task);
         }
     }
-    return nullptr;
+    return out;
 }
+
 
 SweepTask* TaskManager::taskById(uint64_t id) {
     for (auto& task : mTasks) {
@@ -479,14 +485,26 @@ std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId
     if (billOfLand(landId)) {
         return "本领地存在待支付账单，请先完成支付或关闭该账单后再新建任务。";
     }
-    if (taskOfLandConst(landId)) {
-        return "本领地已有进行中的清扫任务，请先完成或终止它。";
+
+    // 同一领地多任务：默认允许（allow_multi_task_per_land = true）；
+    // 关闭该开关后恢复旧行为：一个领地同时只允许一个任务。
+    if (!cfg.allowMultiTaskPerLand) {
+        if (auto const* existing = taskOfLandConst(landId); existing) {
+            return "本领地已有进行中的清扫任务 #" + std::to_string(existing->id) + "，请先完成或终止它。";
+        }
     }
-    if ((int)mTasks.size() >= cfg.globalTaskLimit) {
-        return "全局清理任务已满（" + std::to_string(cfg.globalTaskLimit) + "），请等待任务完成后释放名额。";
+
+    // 拒绝文案必须带上"当前数量/上限"，否则管理员无法判断是配置没生效还是命中了别的限制
+    int const globalCount = (int)mTasks.size();
+    if (globalCount >= cfg.globalTaskLimit) {
+        return "全局清理任务已满（" + std::to_string(globalCount) + "/" + std::to_string(cfg.globalTaskLimit)
+             + "），请等待任务完成后释放名额。";
     }
-    if (playerTaskCount(player.getUuid()) >= cfg.playerTaskLimit) {
-        return "你已有进行中的清扫任务，请先完成或终止后再新建。";
+
+    int const ownCount = playerTaskCount(player.getUuid());
+    if (ownCount >= cfg.playerTaskLimit) {
+        return "你已有 " + std::to_string(ownCount) + " 个进行中的清扫任务（上限 "
+             + std::to_string(cfg.playerTaskLimit) + "），请先完成或终止后再新建。";
     }
     return {};
 }
@@ -582,8 +600,7 @@ void TaskManager::pauseTask(uint64_t id, std::string const& reason) {
     task->leavePaused   = false; // 调用方若因"离开领地"触发，会在返回后置 true
 
     if (auto* owner = findOwner(*task); owner) {
-        // 暂停期间继续显示：BossBar 变成"释放倒计时"，清理范围线框保持不消失
-        task->bossShown = false;
+        // 暂停期间继续显示：看板会把它钉在槽位上并切换成"释放倒计时"，线框保持不消失
         updateBossBar(*task, *owner);
         owner->sendMessage("§e[领地清扫] 任务已暂停：" + reason);
     }
@@ -617,15 +634,17 @@ void TaskManager::finishTask(uint64_t id) {
     if (!task) {
         return;
     }
-    if (auto* owner = findOwner(*task); owner) {
-        visual::BossBar::hide(*owner, visual::BossBar::idFor("task-" + std::to_string(id)));
-        visual::RegionRenderer::clearBox(*owner, "task-frame");
+    Player* owner = findOwner(*task);
+    if (owner) {
         owner->sendMessage("§a[领地清扫] 任务已完成，感谢使用！");
     }
     log::get().info("任务 #{} 已完成。", id);
     std::erase_if(mTasks, [&](SweepTask const& t) { return t.id == id; });
     db::deleteTask(id);
     rebuildActiveChunkGrid();
+    if (owner) {
+        refreshBoard(*owner); // 槽位重排：结束的任务让位给后续任务，或隐藏空槽
+    }
 }
 
 void TaskManager::killTask(uint64_t id, std::string const& reason) {
@@ -638,10 +657,8 @@ void TaskManager::killTask(uint64_t id, std::string const& reason) {
     int64_t const expected = computeRefund(*task);
     int64_t const refunded = refundTask(*task, reason);
 
-    if (auto* owner = findOwner(*task); owner) {
-        visual::BossBar::hide(*owner, visual::BossBar::idFor("task-" + std::to_string(id)));
-        visual::RegionRenderer::clearBox(*owner, "task-frame");
-
+    Player* owner = findOwner(*task);
+    if (owner) {
         std::string message = "§c[领地清扫] 任务已终止：" + reason;
         if (refunded > 0) {
             message += "，已按未完成比例退还 " + std::to_string(refunded) + " "
@@ -656,133 +673,313 @@ void TaskManager::killTask(uint64_t id, std::string const& reason) {
     std::erase_if(mTasks, [&](SweepTask const& t) { return t.id == id; });
     db::deleteTask(id);
     rebuildActiveChunkGrid();
-}
-
-void TaskManager::updateBossBar(SweepTask& task, Player& player) {
-    auto const& cfg = ConfigManager::getInstance().get();
-
-    // 任何表现层调用都不允许异常逃逸到 LL3 的事件分发里
-    try {
-        if (!cfg.bossBarEnabled && !cfg.regionFrameEnabled) {
-            task.bossShown = true; // 已关闭显示，避免每轮重复进入
-            return;
-        }
-
-        if (!cfg.bossBarEnabled) {
-            if (!task.bossShown) {
-                if (cfg.regionFrameEnabled) {
-                    visual::RegionRenderer::drawBox(
-                        player,
-                        "task-frame",
-                        AABB{
-                            Vec3{(float)task.plan.minX, (float)task.plan.minY, (float)task.plan.minZ},
-                            Vec3{(float)task.plan.maxX + 1.0f, (float)task.plan.maxY + 1.0f, (float)task.plan.maxZ + 1.0f}
-                        },
-                        mce::Color{80, 220, 255, 180}
-                    );
-                }
-                task.bossShown = true;
-            }
-            return;
-        }
-
-        updateBossBarImpl(task, player);
-    } catch (std::exception const& e) {
-        log::get().error("刷新任务 #{} 显示时异常: {}（已停止显示该任务）", task.id, e.what());
-        task.bossShown = true;
-    } catch (...) {
-        log::get().error("刷新任务 #{} 显示时发生未知异常（已停止显示该任务）", task.id);
-        task.bossShown = true;
+    if (owner) {
+        refreshBoard(*owner); // 槽位重排 / 线框切换
     }
 }
 
-void TaskManager::updateBossBarImpl(SweepTask& task, Player& player) {
-    int64_t bossId = visual::BossBar::idFor("task-" + std::to_string(task.id));
+// ---------------------------------------------------------------------------
+// 表现层：BossBar 槽位看板 + 轮换
+// ---------------------------------------------------------------------------
+//
+// 设计要点：
+//   * 槽位 bossId 固定（bar-slot-0 / bar-slot-1 …），同一条 BossBar 在进程生命周期内复用；
+//     内容轮换时只发 UpdateName / UpdatePercent，不重建，客户端不会闪烁；
+//   * 任务数 <= bossbar_max_bars 时行为与旧的"一任务一条"完全一致；
+//   * 超出上限时，暂停中的任务优先占位（它们有释放倒计时，不能被轮换掉），
+//     其余槽位在剩余任务之间按 bossbar_rotate_seconds 轮换；
+//   * 线框只跟随"主任务"（排序后的第一个），避免多任务共用 task-frame 互相覆盖闪烁。
+
+namespace {
+
+/// 槽位对应的稳定 bossId：同一个槽位永远复用同一条 BossBar
+int64_t slotBossId(int slotIndex) { return visual::BossBar::idFor("bar-slot-" + std::to_string(slotIndex)); }
+
+/// 单个任务的进度条内容（不含外层 [领地清扫] / [清扫#id] 前缀）
+struct BarContent {
+    std::string      body;
+    char const*      bracketColor{"§e"};
+    float            ratio{1.0f};
+    visual::BarColor color{visual::BarColor::Green};
+};
+
+BarContent buildBarContent(SweepTask const& task) {
+    BarContent out;
 
     int total = task.plan.layerCount;
     int cur   = std::min(task.layersDone + 1, total);
 
-    PhaseInfo const info  = describePhase(task);
+    PhaseInfo const info   = describePhase(task);
     int const       remain = info.remainSeconds;
     int const       span   = info.phase == BarPhase::Clearing ? 0 : info.spanSeconds;
 
-    float ratio = span > 0 ? (float)remain / (float)span : 1.0f;
+    out.ratio = span > 0 ? (float)remain / (float)span : 1.0f;
 
     // 收尾阶段：进度条按扫描游标归一
     if (info.phase == BarPhase::Finalizing) {
         auto const& cfg = ConfigManager::getInstance().get();
         if (cfg.subchunkCulling) {
-            int const subCountX = (task.plan.maxX >> 4) - (task.plan.minX >> 4) + 1;
-            int const subCountZ = (task.plan.maxZ >> 4) - (task.plan.minZ >> 4) + 1;
-            int const subCountY = (task.plan.maxY >> 4) - (task.plan.minY >> 4) + 1;
-            int64_t const total = static_cast<int64_t>(subCountX) * subCountZ * subCountY;
-            ratio = total > 0 ? (float)((double)task.finalCursor / (double)total) : 1.0f;
+            int const     subCountX = (task.plan.maxX >> 4) - (task.plan.minX >> 4) + 1;
+            int const     subCountZ = (task.plan.maxZ >> 4) - (task.plan.minZ >> 4) + 1;
+            int const     subCountY = (task.plan.maxY >> 4) - (task.plan.minY >> 4) + 1;
+            int64_t const target   = static_cast<int64_t>(subCountX) * subCountZ * subCountY;
+            out.ratio              = target > 0 ? (float)((double)task.finalCursor / (double)target) : 1.0f;
         } else {
             int64_t const w     = std::max<int64_t>(1, task.plan.width());
             int64_t const d     = std::max<int64_t>(1, task.plan.depth());
             int64_t const h     = std::max<int64_t>(1, (int64_t)task.plan.maxY - task.plan.minY + 1);
             int64_t const total = w * d * h;
-            ratio               = total > 0 ? (float)((double)task.finalCursor / (double)total) : 1.0f;
+            out.ratio           = total > 0 ? (float)((double)task.finalCursor / (double)total) : 1.0f;
         }
     }
 
     // 颜色按剩余比例，避免 2 秒的分块间隔直接闪红
-    visual::BarColor color = visual::BarColor::Green;
     if (span > 0) {
-        if (ratio <= 0.25f) {
-            color = visual::BarColor::Red;
-        } else if (ratio <= 0.5f) {
-            color = visual::BarColor::Yellow;
+        if (out.ratio <= 0.25f) {
+            out.color = visual::BarColor::Red;
+        } else if (out.ratio <= 0.5f) {
+            out.color = visual::BarColor::Yellow;
         }
     }
 
-    std::string title;
     if (info.phase == BarPhase::Finalizing) {
-        int pct = (int)std::lround(ratio * 100.0f);
+        int pct = (int)std::lround(out.ratio * 100.0f);
         pct     = std::clamp(pct, 0, 100);
-        title   = "§e[领地清扫] §f收尾清理 §7| §a进度 " + percentText(pct);
+        out.body = "§f收尾清理 §7| §a进度 " + percentText(pct);
     } else if (info.phase == BarPhase::Paused) {
-        title = "§c[领地清扫] §f任务已暂停 §7| §c释放倒计时 " + std::to_string(remain) + "s";
-        title += " §7| §a进度 " + percentText(task.progressPercent());
+        out.bracketColor = "§c";
+        out.body         = "§f任务已暂停 §7| §c释放倒计时 " + std::to_string(remain) + "s";
+        out.body += " §7| §a进度 " + percentText(task.progressPercent());
     } else {
-        title = "§e[领地清扫] §f第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层";
+        out.body = "§f第 " + std::to_string(cur) + "/" + std::to_string(total) + " 层";
 
         int const chunks = task.chunksPerLayer();
         if (task.plan.chunked && chunks > 1) {
             int const chunkCur = std::min(task.chunkIndex + 1, chunks);
-            title += " §7| §b分块 " + std::to_string(chunkCur) + "/" + std::to_string(chunks);
+            out.body += " §7| §b分块 " + std::to_string(chunkCur) + "/" + std::to_string(chunks);
         }
 
         if (span > 0) {
-            title += std::string{" §7| "} + info.name + " §c" + std::to_string(remain) + "s";
+            out.body += std::string{" §7| "} + info.name + " §c" + std::to_string(remain) + "s";
         } else {
-            title += " §7| §a清理中";
+            out.body += " §7| §a清理中";
         }
 
-        title += " §7| §a进度 " + percentText(task.progressPercent());
+        out.body += " §7| §a进度 " + percentText(task.progressPercent());
+    }
+    return out;
+}
+
+} // namespace
+
+std::vector<SweepTask*> TaskManager::orderedTasksOfPlayer(mce::UUID const& uuid) {
+    std::vector<SweepTask*> out;
+    out.reserve(mTasks.size());
+    for (auto& task : mTasks) {
+        if (task.ownerUuid == uuid) {
+            out.push_back(&task);
+        }
     }
 
-
-    if (!task.bossShown) {
-        visual::BossBar::show(player, bossId, title, ratio, color);
-        // 任务运行/恢复时重新显示任务区域边框（清理期间常驻）
-        if (ConfigManager::getInstance().get().regionFrameEnabled) {
-            visual::RegionRenderer::drawBox(
-                player,
-                "task-frame",
-                AABB{
-                    Vec3{(float)task.plan.minX, (float)task.plan.minY, (float)task.plan.minZ},
-                    Vec3{(float)task.plan.maxX + 1.0f, (float)task.plan.maxY + 1.0f, (float)task.plan.maxZ + 1.0f}
-                },
-                mce::Color{80, 220, 255, 180}
-            );
+    int const pauseTotal = std::max(1, ConfigManager::getInstance().get().pauseAutoCancelSeconds);
+    std::sort(out.begin(), out.end(), [&](SweepTask* a, SweepTask* b) {
+        bool const aPaused = a->state == TaskState::Paused;
+        bool const bPaused = b->state == TaskState::Paused;
+        if (aPaused != bPaused) {
+            return aPaused; // 暂停中的任务优先展示（有释放倒计时）
         }
-        task.bossShown = true;
+        if (aPaused) {
+            int const aLeft = std::max(0, pauseTotal - a->pausedSeconds);
+            int const bLeft = std::max(0, pauseTotal - b->pausedSeconds);
+            if (aLeft != bLeft) {
+                return aLeft < bLeft; // 剩余释放时间越少越优先
+            }
+        }
+        return a->id < b->id;
+    });
+    return out;
+}
+
+void TaskManager::renderSlot(Player& player, int slotIndex, SweepTask& task, bool multi, bool rotating) {
+    auto& board = mBoards[player.getUuid().asString()];
+    if (slotIndex < 0 || (size_t)slotIndex >= board.slots.size()) {
+        return;
+    }
+    auto& slot = board.slots[(size_t)slotIndex];
+
+    BarContent  content = buildBarContent(task);
+    std::string title   = std::string{content.bracketColor}
+                  + (multi ? "[清扫#" + std::to_string(task.id) + "]" : "[领地清扫]") + " ";
+    title += content.body;
+    if (rotating) {
+        title += " §8| 轮换";
+    }
+
+    int64_t const bossId = slotBossId(slotIndex);
+    if (!slot.shown) {
+        visual::BossBar::show(player, bossId, title, content.ratio, content.color);
+        slot.shown = true;
     } else {
-        visual::BossBar::update(player, bossId, title, ratio, color);
+        // 轮换后槽位可能换成另一个任务，但条本身不重建：只发增量字段更新
+        visual::BossBar::update(player, bossId, title, content.ratio, content.color);
+    }
+    slot.taskId = task.id;
+}
+
+void TaskManager::refreshFrame(Player& player, SweepTask* primary) {
+    auto const& cfg   = ConfigManager::getInstance().get();
+    auto&       board = mBoards[player.getUuid().asString()];
+
+    auto clearFrame = [&] {
+        if (board.frameDrawn) {
+            visual::RegionRenderer::clearBox(player, "task-frame");
+            board.frameDrawn  = false;
+            board.frameTaskId = 0;
+        }
+    };
+
+    if (!cfg.regionFrameEnabled || primary == nullptr) {
+        clearFrame();
+        return;
+    }
+
+    if (board.frameDrawn && board.frameTaskId == primary->id) {
+        return; // 主任务没变，不重复刷包
+    }
+
+    visual::RegionRenderer::drawBox(
+        player,
+        "task-frame",
+        AABB{
+            Vec3{(float)primary->plan.minX, (float)primary->plan.minY, (float)primary->plan.minZ},
+            Vec3{(float)primary->plan.maxX + 1.0f, (float)primary->plan.maxY + 1.0f, (float)primary->plan.maxZ + 1.0f}
+        },
+        mce::Color{80, 220, 255, 180}
+    );
+    board.frameDrawn  = true;
+    board.frameTaskId = primary->id;
+}
+
+void TaskManager::refreshBoard(Player& player) {
+    auto const& cfg = ConfigManager::getInstance().get();
+
+    auto& board = mBoards[player.getUuid().asString()];
+    if (board.failures >= 3) {
+        return; // 连续异常过多：停用该玩家的表现层刷新，避免刷爆日志（重连后重置）
+    }
+
+    // 任何表现层调用都不允许异常逃逸到 LL3 的事件分发里
+    try {
+        int const cap = std::clamp(cfg.bossBarMaxBars, 1, 8);
+        board.slots.resize((size_t)cap);
+
+        std::vector<SweepTask*> const ordered = orderedTasksOfPlayer(player.getUuid());
+
+        // 线框只跟随主任务，与 BossBar 开关无关
+        refreshFrame(player, ordered.empty() ? nullptr : ordered.front());
+
+        auto hideSlot = [&](int i) {
+            auto& slot = board.slots[(size_t)i];
+            if (slot.shown) {
+                visual::BossBar::hide(player, slotBossId(i));
+                slot.shown = false;
+            }
+            slot.taskId = 0;
+        };
+
+        if (!cfg.bossBarEnabled) {
+            for (int i = 0; i < cap; ++i) {
+                hideSlot(i);
+            }
+            board.failures = 0;
+            return;
+        }
+
+        int const              n = (int)ordered.size();
+        std::vector<SweepTask*> visible((size_t)cap, nullptr);
+        bool                   rotatingMode = false;
+        int                    pinned       = 0;
+
+        if (n <= cap) {
+            // 未超过上限：槽位与任务一一对应，等价于旧的"一任务一条"
+            for (int i = 0; i < n; ++i) {
+                visible[(size_t)i] = ordered[(size_t)i];
+            }
+        } else {
+            int pausedCount = 0;
+            for (auto* t : ordered) {
+                if (t->state == TaskState::Paused) {
+                    ++pausedCount;
+                }
+            }
+
+            pinned          = std::min(pausedCount, cap);
+            int const free  = cap - pinned;
+            int const poolN = n - pinned;
+
+            for (int i = 0; i < pinned; ++i) {
+                visible[(size_t)i] = ordered[(size_t)i];
+            }
+
+            if (free > 0 && poolN > 0) {
+                rotatingMode          = true;
+                int64_t const now     = (int64_t)std::time(nullptr);
+                int64_t const span    = std::max<int64_t>(1, cfg.bossBarRotateSeconds);
+                int64_t const offset  = (now / span) % poolN;
+                for (int j = 0; j < free; ++j) {
+                    int const idx      = pinned + (int)((offset + j) % poolN);
+                    visible[(size_t)(pinned + j)] = ordered[(size_t)idx];
+                }
+            } else {
+                // 暂停任务已经占满槽位：优先显示它们（释放倒计时更重要）
+                for (int i = 0; i < cap; ++i) {
+                    visible[(size_t)i] = ordered[(size_t)i];
+                }
+            }
+        }
+
+        bool const multi = n > 1;
+        for (int i = 0; i < cap; ++i) {
+            if (visible[(size_t)i] == nullptr) {
+                hideSlot(i);
+                continue;
+            }
+            bool const rotating = rotatingMode && i >= pinned;
+            renderSlot(player, i, *visible[(size_t)i], multi, rotating);
+        }
+        board.failures = 0;
+    } catch (std::exception const& e) {
+        ++board.failures;
+        log::get().error(
+            "刷新玩家 {} 的 BossBar 看板异常（第 {} 次）: {}",
+            player.getRealName(),
+            board.failures,
+            e.what()
+        );
+    } catch (...) {
+        ++board.failures;
+        log::get().error("刷新玩家 {} 的 BossBar 看板异常（第 {} 次）", player.getRealName(), board.failures);
     }
 }
 
+void TaskManager::refreshBoards() {
+    std::unordered_set<std::string> handled;
+    for (auto& task : mTasks) {
+        auto* owner = findOwner(task);
+        if (owner == nullptr) {
+            continue;
+        }
+        if (!handled.insert(owner->getUuid().asString()).second) {
+            continue;
+        }
+        refreshBoard(*owner);
+    }
+}
+
+void TaskManager::updateBossBar(SweepTask& task, Player& player) {
+    (void)task; // 兼容旧调用点：统一刷新该玩家的看板（槽位/轮换/线框一起处理）
+    refreshBoard(player);
+}
 // ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
@@ -1415,18 +1612,30 @@ void TaskManager::tick() {
         killTask(id, "暂停超时（" + std::to_string(cfg.pauseAutoCancelSeconds) + " 秒未继续）");
     }
 
-    // 第二阶段：公平轮转推进运行中的任务，受 globalBudget 严格锁死
-    size_t const taskCount = mTasks.size();
-    if (taskCount > 0 && globalBudget > 0) {
-        for (size_t i = 0; i < taskCount && globalBudget > 0; ++i) {
-            auto& task = mTasks[i];
-            if (task.state == TaskState::Running) {
-                stepTask(task, globalBudget);
-            }
+    // 第二阶段：公平轮转推进运行中的任务，受 globalBudget 严格锁死。
+    // 用 id 快照推进：stepTask 内部可能 finishTask 触发 vector erase，
+    // 直接按下标迭代会跳过相邻任务（任务越多越明显）。
+    std::vector<uint64_t> runningIds;
+    runningIds.reserve(mTasks.size());
+    for (auto const& task : mTasks) {
+        if (task.state == TaskState::Running) {
+            runningIds.push_back(task.id);
+        }
+    }
+    for (auto id : runningIds) {
+        if (globalBudget <= 0) {
+            break;
+        }
+        auto* task = taskById(id);
+        if (task != nullptr && task->state == TaskState::Running) {
+            stepTask(*task, globalBudget);
         }
     }
 
-    // 第三阶段：批量单事务提交所有 dirty 任务到 SQLite（极大降低磁盘 I/O）
+    // 第三阶段：刷新所有在线领主的看板（即使全局预算耗尽，轮换也要持续走）
+    refreshBoards();
+
+    // 第四阶段：批量单事务提交所有 dirty 任务到 SQLite（极大降低磁盘 I/O）
     db::flushDirtyTasks(mTasks);
 }
 
@@ -1436,10 +1645,8 @@ void TaskManager::tick() {
 
 void TaskManager::onPlayerJoin(Player& player) {
     // 进服瞬间客户端还在接收区块数据，此时直接发送 BossBar 包可能被丢弃甚至导致断连。
-    // 这里只重置显示状态，真正发包交给下一轮 tick（玩家已完全进入世界）。
-    if (auto* task = taskOfPlayer(player.getUuid()); task) {
-        task->bossShown = false;
-    }
+    // 这里只丢弃旧的看板状态，真正发包交给下一轮 tick（玩家已完全进入世界）。
+    mBoards.erase(player.getUuid().asString());
 
     // 补发离线期间的退款（此时玩家在线，经济后端一定可用）
     deliverPendingPayouts(player);
@@ -1496,12 +1703,10 @@ void TaskManager::deliverPendingPayouts(Player& player) {
 }
 
 void TaskManager::onPlayerQuit(Player const& player) {
-    // 玩家下线：隐藏 BossBar（下次上线会重建）
-    if (auto* task = taskOfPlayer(player.getUuid()); task) {
-        task->bossShown = false;
-        visual::BossBar::forget(player.getUuid());
-        visual::RegionRenderer::forget(player.getUuid());
-    }
+    // 玩家下线：丢弃看板与线框状态（对象正在断连，无需再补发 Remove 包），下次上线重建
+    mBoards.erase(player.getUuid().asString());
+    visual::BossBar::forget(player.getUuid());
+    visual::RegionRenderer::forget(player.getUuid());
 }
 
 void TaskManager::refreshOwnerPresence() {}
@@ -1870,13 +2075,23 @@ int64_t TaskManager::refundTask(SweepTask& task, std::string const& reason) {
 void TaskManager::init() { loadState(); }
 
 void TaskManager::shutdown() {
-    // 清理运行时表现层对象（BossBar / 线框）
+    // 清理运行时表现层对象（BossBar / 线框）：每个在线领主只处理一次
+    auto const cap = std::clamp(ConfigManager::getInstance().get().bossBarMaxBars, 1, 8);
+    std::unordered_set<std::string> handled;
     for (auto& task : mTasks) {
-        if (auto* owner = findOwner(task); owner) {
-            visual::BossBar::hide(*owner, visual::BossBar::idFor("task-" + std::to_string(task.id)));
-            visual::RegionRenderer::clearBox(*owner, "task-frame");
+        auto* owner = findOwner(task);
+        if (owner == nullptr) {
+            continue;
         }
+        if (!handled.insert(owner->getUuid().asString()).second) {
+            continue;
+        }
+        for (int i = 0; i < cap; ++i) {
+            visual::BossBar::hide(*owner, slotBossId(i));
+        }
+        visual::RegionRenderer::clearBox(*owner, "task-frame");
     }
+    mBoards.clear();
     mTasks.clear();
     mBills.clear();
 }

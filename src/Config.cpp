@@ -114,6 +114,26 @@ std::vector<std::pair<std::string, std::string>> buildFieldBlocks(Config const& 
     );
 
     field(
+        "allow_multi_task_per_land",
+        cfg.allowMultiTaskPerLand ? "true" : "false",
+        {"是否允许同一领地内同时存在多个清扫任务",
+         "关闭后恢复旧行为：一个领地同时只允许一个任务（全局仍受 player_task_limit 与 global_task_limit 限制）"}
+    );
+
+    field(
+        "bossbar_max_bars",
+        std::to_string(cfg.bossBarMaxBars),
+        {"同一玩家同时可见的 BossBar 条数上限",
+         "任务数量超过该值时，超出部分会在可见槽位之间轮流展示，避免进度条铺满屏幕"}
+    );
+
+    field(
+        "bossbar_rotate_seconds",
+        std::to_string(cfg.bossBarRotateSeconds),
+        {"BossBar 轮换间隔（秒）：任务数超过上限时，每隔这么多秒切换一组展示"}
+    );
+
+    field(
         "region_frame_enabled",
         cfg.regionFrameEnabled ? "true" : "false",
         {"是否显示选区与任务区域的调试线框（依赖 DebugShape）"}
@@ -361,7 +381,7 @@ bool appendMissingFields(
 
 /// 配置版本迁移：重写配置以移除废弃字段（写入前备份原文件）
 bool migrateConfigFile(std::filesystem::path const& file, nlohmann::json const& root, Config& cfg) {
-    constexpr int kCurrentConfigVersion = 4;
+    constexpr int kCurrentConfigVersion = 5;
 
     if (cfg.configVersion >= kCurrentConfigVersion) {
         return false;
@@ -466,9 +486,20 @@ std::vector<std::string> Config::sanitize() {
             value = fallbackValue;
         }
     };
+    // 上下限都要夹取：超出上限会让 BossBar 铺满屏幕 / 轮换过慢
+    auto clampRange = [&](char const* name, int& value, int minimum, int maximum, int fallbackValue) {
+        if (value < minimum || value > maximum) {
+            fixed.push_back(std::string(name) + " 超出范围（" + std::to_string(value) + "，允许 "
+                            + std::to_string(minimum) + "~" + std::to_string(maximum) + "），已回退为 "
+                            + std::to_string(fallbackValue));
+            value = fallbackValue;
+        }
+    };
 
     clampInt("global_task_limit", globalTaskLimit, 1, 1);
     clampInt("player_task_limit", playerTaskLimit, 1, 1);
+    clampRange("bossbar_max_bars", bossBarMaxBars, 1, 8, 2);
+    clampRange("bossbar_rotate_seconds", bossBarRotateSeconds, 1, 60, 5);
     clampInt("global_blocks_per_tick_budget", globalBlocksPerTickBudget, 1000, 12000);
     clampInt("layer_countdown_seconds", layerCountdownSeconds, 1, 10);
     clampInt("chunk_matrix_width", chunkMatrixWidth, 1, 10);
@@ -620,6 +651,9 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
     readIfPresent(root, "global_blocks_per_tick_budget", cfg.globalBlocksPerTickBudget);
     readIfPresent(root, "bossbar_enabled", cfg.bossBarEnabled);
     readIfPresent(root, "bossbar_update_mode", cfg.bossBarUpdateMode);
+    readIfPresent(root, "allow_multi_task_per_land", cfg.allowMultiTaskPerLand);
+    readIfPresent(root, "bossbar_max_bars", cfg.bossBarMaxBars);
+    readIfPresent(root, "bossbar_rotate_seconds", cfg.bossBarRotateSeconds);
     readIfPresent(root, "region_frame_enabled", cfg.regionFrameEnabled);
     readIfPresent(root, "layer_countdown_seconds", cfg.layerCountdownSeconds);
     readIfPresent(root, "chunked_clean_enabled", cfg.chunkedCleanEnabled);
@@ -728,10 +762,13 @@ bool ConfigManager::load(std::filesystem::path const& configDir) {
 
     mConfig = std::move(cfg);
     log::get().info(
-        "配置已加载: 经济={} 全局上限={} 单玩家上限={} 每层倒计时={}s 分块={} 离开暂停={}",
+        "配置已加载: 经济={} 全局上限={} 单玩家上限={} 同领地多任务={} BossBar上限={}条/{}s 每层倒计时={}s 分块={} 离开暂停={}",
         mConfig.economyType,
         mConfig.globalTaskLimit,
         mConfig.playerTaskLimit,
+        mConfig.allowMultiTaskPerLand ? "开" : "关",
+        mConfig.bossBarMaxBars,
+        mConfig.bossBarRotateSeconds,
         mConfig.layerCountdownSeconds,
         mConfig.chunkedCleanEnabled ? "开" : "关",
         mConfig.pauseOnPlayerLeave ? "开" : "关"

@@ -18,7 +18,7 @@ namespace ts::db {
 /// 建表 + 索引 + schema 版本；返回是否成功
 bool initSchema();
 
-/// 读取全部任务（按 id 升序）；重复 land_id 只保留 updated_at 最新的一条
+/// 读取全部任务（按 id 升序）。同一领地允许多个任务，不做 land_id 去重。
 std::vector<SweepTask> loadTasks();
 
 /// 读取全部待支付账单（按 land_id）

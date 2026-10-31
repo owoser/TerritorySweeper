@@ -577,7 +577,6 @@ std::vector<SweepTask> loadTasks() {
         return out;
     }
 
-    std::unordered_set<int64_t> seenLands;
     while (st.next()) {
         SweepTask task;
         task.id            = (uint64_t)st.columnInt(0);
@@ -594,15 +593,8 @@ std::vector<SweepTask> loadTasks() {
         task.paidAmount    = st.columnInt(11);
         task.plan          = readPlan(st, kTaskPlanBase, true);
 
-        if (seenLands.count(task.plan.landId) > 0) {
-            log::get().warn(
-                "检测到领地 #{} 存在重复任务行，已忽略 task_id={}（保留 updated_at 最新的一条）。",
-                task.plan.landId,
-                task.id
-            );
-            continue;
-        }
-        seenLands.insert(task.plan.landId);
+        // 注意：同一领地允许存在多个任务（allow_multi_task_per_land），这里绝不能按 land_id 去重，
+        // 否则重启后多任务会被静默丢弃。
 
         // 重启后统一恢复为暂停，但保留已消耗的暂停秒数（释放倒计时续走）
         task.state = TaskState::Paused;
