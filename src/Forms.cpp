@@ -255,6 +255,14 @@ void openPayment(Player& player, SweepPlan plan) {
             openPayment(p, planCopy);
             return;
         }
+        // 支付前再校验一次名额：从选点/挂起账单到付款之间，名额可能已被其它任务占满，
+        // 必须保证"扣了钱就一定能把任务建出来"。（忽略账单判定：本领地若有账单，本次支付就会消费它）
+        if (auto reject = TaskManager::getInstance().checkCreateAllowed(p, planCopy.landId, true); !reject.empty()) {
+            p.sendMessage("§c[领地清扫] " + reject);
+            p.sendMessage("§7本次未扣款。");
+            return;
+        }
+
         if (!service.reduce(target, planCopy.totalPrice)) {
             p.sendMessage("§c扣款失败，请检查经济系统或联系管理员。");
             openPayment(p, planCopy);

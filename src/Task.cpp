@@ -479,10 +479,10 @@ bool TaskManager::isInsideActiveTask(int dimId, BlockPos const& pos) const {
     return false;
 }
 
-std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId) const {
+std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId, bool ignoreBill) const {
     auto const& cfg = ConfigManager::getInstance().get();
 
-    if (billOfLand(landId)) {
+    if (!ignoreBill && billOfLand(landId)) {
         return "本领地存在待支付账单，请先完成支付或关闭该账单后再新建任务。";
     }
 

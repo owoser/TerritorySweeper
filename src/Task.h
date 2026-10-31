@@ -234,7 +234,8 @@ public:
     [[nodiscard]] bool isInsideActiveTask(int dimId, BlockPos const& pos) const;
 
     /// 返回空串表示允许创建；否则为拒绝原因
-    [[nodiscard]] std::string checkCreateAllowed(Player const& player, int64_t landId) const;
+    /// @param ignoreBill 为 true 时跳过"领地有挂起账单"判定（支付流程里该账单即将被本次支付消费）
+    [[nodiscard]] std::string checkCreateAllowed(Player const& player, int64_t landId, bool ignoreBill = false) const;
 
     // ---------------- 账单 ----------------
     void   storeBill(PendingBill bill);
