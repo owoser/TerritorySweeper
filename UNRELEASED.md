@@ -146,6 +146,30 @@
 - **信息**：`docs: 将 UNRELEASED.md 纳入 Git 跟踪并推送到仓库，记录 v1.0.0 后的全部迭代历史`
 - **内容**：将 `UNRELEASED.md` 从 `.gitignore` 中移除，正式推送到 GitHub 远端仓库公开跟踪，确保团队与开源社区能够随时查阅开发分支的最新技术进展与修复明细。
 
+### Commit 14: `8fca127` (2026-10-31 20:32:39 +0800)
+- **信息**：`build(xmake): 升级 LeviLamina 26.51.9 + clang-cl 23 工具链，ILA 导入库改为构建期从入库 .def 生成`
+- **内容**：
+  - **工具链升级（LL 官方已改用 LLVM 23）**：SDK 版本线 `26.51.6 → 26.51.9`（`add_requires` + `add_requireconfs` 双处锁定），编译器强制 clang-cl >= 23；clang 19 在 `MinecraftCommands.h` 上必现 `invalid application of 'sizeof' to an incomplete type`，升级后无任何报错；
+  - **预编译 SDK 分发**：新增 `xmake-repo-extra/packages/l/levilamina/xmake.lua`，只把 `on_install` 换成下载 `include/` + `lib/`，依赖列表与官方 `versions/26_51_9.lua` 严格一致；产物由本仓库 Release `sdk-v26.51.9`（pre-release）托管，并配置 `TerritoryMobBlocker` 同名 release 作为兜底镜像（同一 sha256 `33056860…f086c`）；
+  - **新增 `tools/build-sdk.ps1`**：LL 小版本升级时从本机已安装包重新打包 SDK 并输出 sha256；
+  - **ILA 导入库工程化**：`third_party/lib/ILA.def`（导出表）入库跟踪，`.lib` 由 `xmake.lua` 的 `on_load` 在配置阶段用 `llvm-lib /def:` 自动生成（生成结果与旧文件**字节完全一致**），CI 不再需要测试服 DLL；
+  - **编译器护栏**：`on_load` 检测 PATH 首个 `clang-cl`，主版本 < 23 时抛出可读错误（提示装 LLVM 23、前置 PATH、并 `xmake f -c -y`）；
+  - **版本号注入**：支持 `TS_VERSION` 环境变量（去前导 v）写入 `manifest.json`，本地未设置时仍回退 `git describe`；
+  - **修复「延迟加载从未生效」**：`@levibuildscript/linkrule` 的链接步骤只保留 `shflags`，此前的 `add_ldflags("/DELAYLOAD:iListenAttentively.dll")` 根本没进链接命令行（旧版 DLL 的普通导入表里就有 ILA）；改为 `add_shflags` 后 `dumpbin /imports` 确认 ILA 已进入 delay load 段。同时把 `#pragma comment(linker, ...)` 方案判为无效（`/DELAYLOAD` 不在 `.drectve` 支持列表），并在 ILA 缺失时让 `registerListener()` 提前返回，避免延迟加载异常。
+
+### Commit 15: `418d2d5` (2026-10-31 20:32:47 +0800)
+- **信息**：`ci: 新增 GitHub Actions tag 构建与自动发版（LLVM 23 + 预编译 SDK）`
+- **内容**：
+  - `.github/workflows/build.yml`：push `main` / PR / 手动触发，只构建 + 上传 artifact；依赖包失败时自动导出 `install.txt` 尾部 300 行（xmake 的真实报错只在里面）；
+  - `.github/workflows/release.yml`：push tag `v*` → 校验 tag 语义化 → 构建（`TS_VERSION` 注入）→ 校验 `manifest.json` 版本与 tag 一致 → 打包 `TerritorySweeper-<版本>.zip` → 自动创建 Release（`-` 结尾自动标 pre-release）；发行说明优先读取 `release-notes/<tag>.md`，缺失回退 GitHub 自动生成并告警；
+  - 构建环境固定 `windows-2022` + `ZhongRuoyu/setup-llvm@v0`（`llvm-version: 23`）+ `xmake-io/github-action-setup-xmake@v1`，缓存 `~/AppData/Local/.xmake`；
+  - 新增 `release-notes/` 目录约定与说明文档（发版前撰写 `<tag>.md`）；
+  - `tooth.json`：修正占位仓库地址 `github.com/example/...` → `github.com/owoser/TerritorySweeper`，补登记 `iListenAttentively 0.17.*` 依赖。
+
+### Commit 16: `（本条提交）`
+- **信息**：`docs: 记录 CI 体系与 LL 26.51.9 / 工具链升级（UNRELEASED.md）`
+- **内容**：把本次 CI 体系与工具链升级的完整事实（含 SDK 分发、ILA 导入库、延迟加载踩坑、发版流程变更）写入未发布迭代日志，作为下一次正式发版 Release Notes 的事实来源。
+
 ---
 
 ## ⚙️ 新增/变更配置项汇总表（对比 v1.0.0）
