@@ -280,9 +280,9 @@ void handleKill(Player& player, CommandOutput& output, std::optional<uint64_t> t
     }
 
     uint64_t const id = target->id;
-    manager.killTask(id, "领主通过 /ts kill 终止");
+    manager.killTask(id, "领主通过 /ts kill 终止"); // killTask 内部会发送带任务号与退款的提示
     output.success("任务 #" + std::to_string(id) + " 已终止。");
-    player.sendMessage("§c[领地清扫] 任务 #" + std::to_string(id) + " 已终止。");
+    (void)player;
 }
 
 } // namespace

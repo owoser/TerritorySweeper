@@ -372,16 +372,14 @@ void openManage(Player& player, SweepTask& task) {
     uint64_t id = task.id;
 
     if (task.state == TaskState::Running) {
+        // pauseTask / resumeTask 内部已发送带任务号的提示，这里不再重复发送
         form.appendButton("§0暂停任务", [id](Player& p) {
             TaskManager::getInstance().pauseTask(id, "领主手动暂停");
-            p.sendMessage("§e[领地清扫] 任务已暂停。");
         });
     } else {
         form.appendButton("§0继续任务", [id](Player& p) {
-            if (TaskManager::getInstance().resumeTask(id)) {
-                p.sendMessage("§a[领地清扫] 任务已继续。");
-            } else {
-                p.sendMessage("§c[领地清扫] 任务不存在或已结束。");
+            if (!TaskManager::getInstance().resumeTask(id)) {
+                p.sendMessage("§c[领地清扫] 任务 #" + std::to_string(id) + " 不存在或已结束。");
             }
         });
     }

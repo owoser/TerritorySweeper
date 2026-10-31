@@ -288,8 +288,8 @@ private:
     void            refreshBoard(Player& player);
     /// 渲染一个槽位（首次 show，之后一律增量 update，避免轮换闪烁）
     void            renderSlot(Player& player, int slotIndex, SweepTask& task, bool multi, bool rotating);
-    /// 线框只跟随"主任务"（排序后的第一个），切换时用同一 key 覆盖
-    void            refreshFrame(Player& player, SweepTask* primary);
+    /// 为每个任务各画一条独立线框（不同颜色），任务结束自动清除
+    void            refreshFrames(Player& player, std::vector<SweepTask*> const& tasks);
     void            loadState();
     /// 按未完成比例退款，返回实际到账金额（0 表示无需退款或退款失败）
     int64_t         refundTask(SweepTask& task, std::string const& reason);
@@ -303,10 +303,9 @@ private:
 
     /// 单个玩家的 BossBar 看板
     struct BarBoard {
-        std::vector<BarSlot> slots;        ///< 长度 = bossbar_max_bars
-        uint64_t             frameTaskId{0}; ///< 当前线框绑定的任务
-        bool                 frameDrawn{false};
-        int                  failures{0};  ///< 连续异常次数，>=3 停用该玩家看板
+        std::vector<BarSlot>         slots;        ///< 长度 = bossbar_max_bars
+        std::unordered_set<uint64_t> framedTasks; ///< 已绘制线框的任务 id（每任务一条框）
+        int                          failures{0}; ///< 连续异常次数，>=3 停用该玩家看板
     };
 
     std::unordered_map<std::string, BarBoard> mBoards; ///< key = 玩家 UUID 字符串

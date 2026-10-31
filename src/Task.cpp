@@ -613,7 +613,7 @@ void TaskManager::pauseTask(uint64_t id, std::string const& reason) {
     if (auto* owner = findOwner(*task); owner) {
         // 暂停期间继续显示：看板会把它钉在槽位上并切换成"释放倒计时"，线框保持不消失
         updateBossBar(*task, *owner);
-        owner->sendMessage("§e[领地清扫] 任务已暂停：" + reason);
+        owner->sendMessage("§e[领地清扫] 任务 #" + std::to_string(id) + " 已暂停：" + reason);
     }
     log::get().info("任务 #{} 已暂停：{}", id, reason);
     task->dirty = true;
@@ -632,7 +632,7 @@ bool TaskManager::resumeTask(uint64_t id) {
     task->leavePaused    = false;
     if (auto* owner = findOwner(*task); owner) {
         updateBossBar(*task, *owner);
-        owner->sendMessage("§a[领地清扫] 任务已继续。");
+        owner->sendMessage("§a[领地清扫] 任务 #" + std::to_string(id) + " 已继续。");
     }
     task->dirty = true;
     db::upsertTask(*task);
@@ -647,7 +647,7 @@ void TaskManager::finishTask(uint64_t id) {
     }
     Player* owner = findOwner(*task);
     if (owner) {
-        owner->sendMessage("§a[领地清扫] 任务已完成，感谢使用！");
+        owner->sendMessage("§a[领地清扫] 任务 #" + std::to_string(id) + " 已完成，感谢使用！");
     }
     log::get().info("任务 #{} 已完成。", id);
     std::erase_if(mTasks, [&](SweepTask const& t) { return t.id == id; });
@@ -670,7 +670,7 @@ void TaskManager::killTask(uint64_t id, std::string const& reason) {
 
     Player* owner = findOwner(*task);
     if (owner) {
-        std::string message = "§c[领地清扫] 任务已终止：" + reason;
+        std::string message = "§c[领地清扫] 任务 #" + std::to_string(id) + " 已终止：" + reason;
         if (refunded > 0) {
             message += "，已按未完成比例退还 " + std::to_string(refunded) + " "
                      + ConfigManager::getInstance().get().moneyname;
@@ -702,6 +702,26 @@ void TaskManager::killTask(uint64_t id, std::string const& reason) {
 //   * 线框只跟随"主任务"（排序后的第一个），避免多任务共用 task-frame 互相覆盖闪烁。
 
 namespace {
+
+/// 暂停任务剩余释放时间不超过该值时，才"钉住"它常显（其余暂停任务参与轮换）
+constexpr int kCriticalPausedSeconds = 60;
+
+/// 每个任务一条线框时使用的颜色调色板（按任务 id 取模，半透明）
+mce::Color frameColorForTask(uint64_t taskId) {
+    static mce::Color const kPalette[] = {
+        mce::Color{80, 220, 255, 180},  // 青
+        mce::Color{120, 230, 120, 180}, // 绿
+        mce::Color{255, 190, 80, 180},  // 橙
+        mce::Color{200, 140, 255, 180}, // 紫
+        mce::Color{255, 120, 160, 180}, // 粉
+        mce::Color{255, 230, 90, 180},  // 黄
+    };
+    constexpr size_t kPaletteSize = sizeof(kPalette) / sizeof(kPalette[0]);
+    return kPalette[taskId % kPaletteSize];
+}
+
+/// 任务线框的 RegionRenderer key（每个任务独立一条）
+std::string frameKeyOf(uint64_t taskId) { return "task-frame-" + std::to_string(taskId); }
 
 /// 槽位对应的稳定 bossId：同一个槽位永远复用同一条 BossBar
 int64_t slotBossId(int slotIndex) { return visual::BossBar::idFor("bar-slot-" + std::to_string(slotIndex)); }
@@ -837,38 +857,51 @@ void TaskManager::renderSlot(Player& player, int slotIndex, SweepTask& task, boo
     slot.taskId = task.id;
 }
 
-void TaskManager::refreshFrame(Player& player, SweepTask* primary) {
+void TaskManager::refreshFrames(Player& player, std::vector<SweepTask*> const& tasks) {
     auto const& cfg   = ConfigManager::getInstance().get();
     auto&       board = mBoards[player.getUuid().asString()];
 
-    auto clearFrame = [&] {
-        if (board.frameDrawn) {
-            visual::RegionRenderer::clearBox(player, "task-frame");
-            board.frameDrawn  = false;
-            board.frameTaskId = 0;
+    auto clearAllFrames = [&] {
+        for (uint64_t id : board.framedTasks) {
+            visual::RegionRenderer::clearBox(player, frameKeyOf(id));
         }
+        board.framedTasks.clear();
     };
 
-    if (!cfg.regionFrameEnabled || primary == nullptr) {
-        clearFrame();
+    if (!cfg.regionFrameEnabled) {
+        clearAllFrames();
         return;
     }
 
-    if (board.frameDrawn && board.frameTaskId == primary->id) {
-        return; // 主任务没变，不重复刷包
+    // 新出现的任务：每任务画一条独立颜色的框（只画一次，避免每秒刷包）
+    std::unordered_set<uint64_t> alive;
+    alive.reserve(tasks.size());
+    for (auto* task : tasks) {
+        alive.insert(task->id);
+        if (board.framedTasks.contains(task->id)) {
+            continue;
+        }
+        visual::RegionRenderer::drawBox(
+            player,
+            frameKeyOf(task->id),
+            AABB{
+                Vec3{(float)task->plan.minX, (float)task->plan.minY, (float)task->plan.minZ},
+                Vec3{(float)task->plan.maxX + 1.0f, (float)task->plan.maxY + 1.0f, (float)task->plan.maxZ + 1.0f}
+            },
+            frameColorForTask(task->id)
+        );
     }
 
-    visual::RegionRenderer::drawBox(
-        player,
-        "task-frame",
-        AABB{
-            Vec3{(float)primary->plan.minX, (float)primary->plan.minY, (float)primary->plan.minZ},
-            Vec3{(float)primary->plan.maxX + 1.0f, (float)primary->plan.maxY + 1.0f, (float)primary->plan.maxZ + 1.0f}
-        },
-        mce::Color{80, 220, 255, 180}
-    );
-    board.frameDrawn  = true;
-    board.frameTaskId = primary->id;
+    // 已结束/消失的任务：清掉它的框
+    for (auto it = board.framedTasks.begin(); it != board.framedTasks.end();) {
+        if (!alive.contains(*it)) {
+            visual::RegionRenderer::clearBox(player, frameKeyOf(*it));
+            it = board.framedTasks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    board.framedTasks = std::move(alive);
 }
 
 void TaskManager::refreshBoard(Player& player) {
@@ -886,8 +919,8 @@ void TaskManager::refreshBoard(Player& player) {
 
         std::vector<SweepTask*> const ordered = orderedTasksOfPlayer(player.getUuid());
 
-        // 线框只跟随主任务，与 BossBar 开关无关
-        refreshFrame(player, ordered.empty() ? nullptr : ordered.front());
+        // 每个任务各画一条独立颜色的线框，与 BossBar 开关无关
+        refreshFrames(player, ordered);
 
         auto hideSlot = [&](int i) {
             auto& slot = board.slots[(size_t)i];
@@ -912,39 +945,42 @@ void TaskManager::refreshBoard(Player& player) {
         int                    pinned       = 0;
 
         if (n <= cap) {
-            // 未超过上限：槽位与任务一一对应，等价于旧的"一任务一条"
+            // 未超过上限：槽位与任务一一对应，行为完全稳定
             for (int i = 0; i < n; ++i) {
                 visible[(size_t)i] = ordered[(size_t)i];
             }
         } else {
-            int pausedCount = 0;
+            // 只有"即将自动终止"的暂停任务才钉住；并且只要还有运行中的任务，就至少留 1 个槽给轮换。
+            // 旧逻辑按"暂停数"整体钉住，2 个暂停就会把轮播占满，运行中的任务永远看不到。
+            int criticalCount = 0;
+            int runningCount  = 0;
             for (auto* t : ordered) {
-                if (t->state == TaskState::Paused) {
-                    ++pausedCount;
+                if (t->state == TaskState::Running) {
+                    ++runningCount;
+                    continue;
+                }
+                if (describePhase(*t).remainSeconds <= kCriticalPausedSeconds) {
+                    ++criticalCount;
                 }
             }
 
-            pinned          = std::min(pausedCount, cap);
-            int const free  = cap - pinned;
-            int const poolN = n - pinned;
+            int const reserve = (runningCount > 0 && criticalCount < cap) ? 1 : 0;
+            pinned            = std::min(criticalCount, cap - reserve);
 
             for (int i = 0; i < pinned; ++i) {
-                visible[(size_t)i] = ordered[(size_t)i];
+                visible[(size_t)i] = ordered[(size_t)i]; // ordered：暂停紧急优先 → 运行中 id 升序
             }
 
+            int const free  = cap - pinned;
+            int const poolN = n - pinned;
             if (free > 0 && poolN > 0) {
                 rotatingMode          = true;
                 int64_t const now     = (int64_t)std::time(nullptr);
                 int64_t const span    = std::max<int64_t>(1, cfg.bossBarRotateSeconds);
                 int64_t const offset  = (now / span) % poolN;
                 for (int j = 0; j < free; ++j) {
-                    int const idx      = pinned + (int)((offset + j) % poolN);
+                    int const idx                 = pinned + (int)((offset + j) % poolN);
                     visible[(size_t)(pinned + j)] = ordered[(size_t)idx];
-                }
-            } else {
-                // 暂停任务已经占满槽位：优先显示它们（释放倒计时更重要）
-                for (int i = 0; i < cap; ++i) {
-                    visible[(size_t)i] = ordered[(size_t)i];
                 }
             }
         }
@@ -2114,7 +2150,11 @@ void TaskManager::shutdown() {
         for (int i = 0; i < cap; ++i) {
             visual::BossBar::hide(*owner, slotBossId(i));
         }
-        visual::RegionRenderer::clearBox(*owner, "task-frame");
+        if (auto it = mBoards.find(owner->getUuid().asString()); it != mBoards.end()) {
+            for (uint64_t id : it->second.framedTasks) {
+                visual::RegionRenderer::clearBox(*owner, frameKeyOf(id));
+            }
+        }
     }
     mBoards.clear();
     mTasks.clear();
