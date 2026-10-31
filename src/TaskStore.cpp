@@ -62,6 +62,7 @@ constexpr std::initializer_list<char const*> kTaskColumns = {
 };
 
 constexpr std::initializer_list<char const*> kBillColumns = {
+    "bill_id",
     "land_id",
     "owner_name",
     "owner_xuid",
@@ -98,7 +99,7 @@ constexpr std::initializer_list<char const*> kBillColumns = {
 };
 
 constexpr int kTaskPlanBase    = 12; ///< 0-based，tasks 中 plan 首列（含 land_id）
-constexpr int kBillPlanBase    = 5;  ///< 0-based，bills 中 plan 首列（不含 land_id）
+constexpr int kBillPlanBase    = 6;  ///< 0-based，bills 中 plan 首列（含 bill_id/land_id）
 constexpr int kPlanColumnCount = 27; ///< tasks 的 plan 列数（含 land_id 与 6 个领地 AABB 列）
 
 std::string joinColumns(std::initializer_list<char const*> cols) {
@@ -234,6 +235,45 @@ void ensureColumn(sqlite3* db, std::string_view table, std::string_view column, 
     Database::getInstance().exec(sql, "schema:alter");
 }
 
+/// 表里是否存在某列（迁移判定用）
+bool tableHasColumn(sqlite3* db, std::string_view table, std::string_view column) {
+    std::string pragma = "PRAGMA table_info(" + std::string{table} + ");";
+    Statement   st{db, pragma, "schema:table_info"};
+    if (!st.valid()) {
+        return false;
+    }
+    while (st.next()) {
+        if (st.columnText(1) == column) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// 结构性迁移前做一份一致性快照（VACUUM INTO）；失败仅告警，不阻断迁移
+void backupDatabaseFile(Database& database, char const* reason) {
+    std::string const path = database.path();
+    if (path.empty()) {
+        return;
+    }
+
+    std::string target = path + ".bak-" + std::to_string(nowSeconds()) + "-" + reason + ".db";
+    std::string escaped;
+    escaped.reserve(target.size());
+    for (char c : target) {
+        if (c == '\'') {
+            escaped += "\'\'";
+        } else {
+            escaped += c;
+        }
+    }
+
+    if (database.exec("VACUUM INTO '" + escaped + "';", "schema:backup")) {
+        log::get().info("数据库迁移前已生成备份: {}", target);
+    } else {
+        log::get().warn("数据库迁移前备份失败（不阻断迁移）: {}", target);
+    }
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -246,7 +286,7 @@ bool initSchema() {
         return false;
     }
 
-    static char const* kDdl = R"SQL(
+    static char const* kDdlPart1 = R"SQL(
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -298,8 +338,14 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_land  ON tasks(land_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_uuid);
 
+)SQL";
+
+    // 账单表（schema v4）：bill_id 自增主键 + land_id 索引，允许同一领地多张挂起账单。
+    // 单独抽出来是为了让 v3 -> v4 迁移复用同一份 DDL。
+    static char const* kBillsDdl = R"SQL(
 CREATE TABLE IF NOT EXISTS bills (
-    land_id         INTEGER PRIMARY KEY,
+    bill_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    land_id         INTEGER NOT NULL,
     owner_name      TEXT    NOT NULL,
     owner_xuid      TEXT    NOT NULL,
     owner_uuid      TEXT    NOT NULL,
@@ -332,6 +378,10 @@ CREATE TABLE IF NOT EXISTS bills (
     land_max_z      INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS idx_bills_land ON bills(land_id);
+)SQL";
+
+    static char const* kDdlPart2 = R"SQL(
 CREATE TABLE IF NOT EXISTS pending_payouts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_uuid TEXT    NOT NULL,
@@ -358,7 +408,8 @@ CREATE TABLE IF NOT EXISTS refunds (
 );
 )SQL";
 
-    if (!database.exec(kDdl, "init:schema")) {
+    std::string const ddl = std::string{kDdlPart1} + kBillsDdl + kDdlPart2;
+    if (!database.exec(ddl, "init:schema")) {
         return false;
     }
 
@@ -369,7 +420,7 @@ CREATE TABLE IF NOT EXISTS refunds (
             version = st.columnInt(0);
         }
     }
-    constexpr int64_t kCurrentVersion = 3;
+    constexpr int64_t kCurrentVersion = 4;
 
     if (version == 0) {
         database.exec("PRAGMA user_version = 1;", "schema:set-version");
@@ -396,6 +447,56 @@ CREATE TABLE IF NOT EXISTS refunds (
         database.exec("PRAGMA user_version = 3;", "schema:set-version");
         log::get().info("数据库已升级到 schema v3（新增离线退款暂存表）。");
         version = 3;
+    }
+
+    // v3 -> v4：bills 改为多账单表（bill_id 自增主键 + land_id 索引，同一领地允许多张）
+    if (version < 4) {
+        if (tableHasColumn(database.raw(), "bills", "bill_id")) {
+            database.exec("PRAGMA user_version = 4;", "schema:set-version");
+            log::get().info("数据库已升级到 schema v4（bills 已是 bill_id 主键）。");
+            version = 4;
+        } else {
+            backupDatabaseFile(database, "schema-v4");
+
+            std::string columns;
+            for (auto const* column : kBillColumns) {
+                if (std::string_view{column} == "bill_id") {
+                    continue;
+                }
+                if (!columns.empty()) {
+                    columns += ", ";
+                }
+                columns += column;
+            }
+
+            bool ok = database.begin();
+            ok      = ok && database.exec("DROP TABLE IF EXISTS bills_v3_backup;", "schema:drop-stale");
+            ok      = ok && database.exec("ALTER TABLE bills RENAME TO bills_v3_backup;", "schema:rename-bills");
+            ok      = ok && database.exec(kBillsDdl, "schema:create-bills");
+            ok      = ok && database.exec(
+                          "INSERT INTO bills (" + columns + ") SELECT " + columns + " FROM bills_v3_backup;",
+                          "schema:copy-bills"
+                      );
+            ok      = ok && database.exec("DROP TABLE bills_v3_backup;", "schema:drop-old-bills");
+
+            if (!ok) {
+                database.rollback();
+                log::get().error(
+                    "数据库 bills 表升级到 schema v4 失败，已回滚：账单功能暂不可用（任务/退款不受影响）。"
+                );
+            } else if (!database.commit()) {
+                database.rollback();
+                log::get().error("数据库 schema v4 提交失败，已回滚（请检查磁盘空间与文件权限）。");
+            } else {
+                database.exec("PRAGMA user_version = 4;", "schema:set-version");
+                log::get().info("数据库已升级到 schema v4（bills 支持同一领地多张账单）。");
+                version = 4;
+            }
+        }
+
+        if (version < 4) {
+            log::get().warn("bills 表仍为旧结构（land_id 主键），账单读写可能异常；下次启动会重试迁移。");
+        }
     }
 
     if (version > kCurrentVersion) {
@@ -618,7 +719,7 @@ bool upsertBill(PendingBill const& bill) {
         return false;
     }
 
-    static std::string const kSql = buildUpsertSql("bills", kBillColumns, "land_id");
+    static std::string const kSql = buildUpsertSql("bills", kBillColumns, "bill_id");
 
     std::lock_guard lock(mutex());
     Statement       st{database.raw(), kSql, "bills:upsert"};
@@ -626,27 +727,28 @@ bool upsertBill(PendingBill const& bill) {
         return false;
     }
 
-    st.bind(1, bill.plan.landId);
-    st.bind(2, bill.ownerName);
-    st.bind(3, bill.ownerXuid);
-    st.bind(4, bill.ownerUuid.asString());
-    st.bind(5, bill.createdAt);
+    st.bind(1, bill.id);
+    st.bind(2, bill.plan.landId);
+    st.bind(3, bill.ownerName);
+    st.bind(4, bill.ownerXuid);
+    st.bind(5, bill.ownerUuid.asString());
+    st.bind(6, bill.createdAt);
     bindPlan(st, kBillPlanBase + 1, bill.plan, false);
 
     return st.execute();
 }
 
-bool deleteBill(int64_t landId) {
+bool deleteBill(int64_t billId) {
     auto& database = Database::getInstance();
     if (!database.ok()) {
         return false;
     }
     std::lock_guard lock(mutex());
-    Statement       st{database.raw(), "DELETE FROM bills WHERE land_id = ?;", "bills:delete"};
+    Statement       st{database.raw(), "DELETE FROM bills WHERE bill_id = ?;", "bills:delete"};
     if (!st.valid()) {
         return false;
     }
-    st.bind(1, landId);
+    st.bind(1, billId);
     return st.execute();
 }
 
@@ -657,7 +759,7 @@ std::vector<PendingBill> loadBills() {
         return out;
     }
 
-    std::string sql = "SELECT " + joinColumns(kBillColumns) + " FROM bills ORDER BY land_id;";
+    std::string sql = "SELECT " + joinColumns(kBillColumns) + " FROM bills ORDER BY bill_id;";
 
     std::lock_guard lock(mutex());
     Statement       st{database.raw(), sql, "bills:load"};
@@ -667,15 +769,16 @@ std::vector<PendingBill> loadBills() {
 
     while (st.next()) {
         PendingBill bill;
-        bill.plan.landId = st.columnInt(0);
-        bill.ownerName   = st.columnText(1);
-        bill.ownerXuid   = st.columnText(2);
-        bill.ownerUuid   = mce::UUID::fromString(st.columnText(3));
-        bill.createdAt   = st.columnInt(4);
-        // land_id 是 bills 主键（第 0 列），plan 块中已省略该列，读取后补回
-        auto plan    = readPlan(st, kBillPlanBase, false);
-        plan.landId  = bill.plan.landId;
-        bill.plan    = std::move(plan);
+        bill.id              = st.columnInt(0);
+        bill.plan.landId     = st.columnInt(1);
+        bill.ownerName       = st.columnText(2);
+        bill.ownerXuid       = st.columnText(3);
+        bill.ownerUuid       = mce::UUID::fromString(st.columnText(4));
+        bill.createdAt       = st.columnInt(5);
+        // land_id 单独取出（plan 块中不含它），读完 plan 后补回
+        auto plan   = readPlan(st, kBillPlanBase, false);
+        plan.landId = bill.plan.landId;
+        bill.plan   = std::move(plan);
         out.push_back(std::move(bill));
     }
     return out;

@@ -399,7 +399,6 @@ std::vector<SweepTask*> TaskManager::tasksOfPlayer(mce::UUID const& uuid) {
     return out;
 }
 
-
 SweepTask* TaskManager::taskById(uint64_t id) {
     for (auto& task : mTasks) {
         if (task.id == id) {
@@ -409,23 +408,6 @@ SweepTask* TaskManager::taskById(uint64_t id) {
     return nullptr;
 }
 
-PendingBill* TaskManager::billOfLand(int64_t landId) {
-    for (auto& bill : mBills) {
-        if (bill.plan.landId == landId) {
-            return &bill;
-        }
-    }
-    return nullptr;
-}
-
-PendingBill const* TaskManager::billOfLand(int64_t landId) const {
-    for (auto const& bill : mBills) {
-        if (bill.plan.landId == landId) {
-            return &bill;
-        }
-    }
-    return nullptr;
-}
 
 void TaskManager::rebuildActiveChunkGrid() {
     mActiveChunkKeys.clear();
@@ -479,12 +461,11 @@ bool TaskManager::isInsideActiveTask(int dimId, BlockPos const& pos) const {
     return false;
 }
 
-std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId, bool ignoreBill) const {
+std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId) const {
     auto const& cfg = ConfigManager::getInstance().get();
 
-    if (!ignoreBill && billOfLand(landId)) {
-        return "本领地存在待支付账单，请先完成支付或关闭该账单后再新建任务。";
-    }
+    // 说明：挂起账单不再阻止新建任务 —— 多账单下这是一条自相矛盾的规则，
+    // 账单只在"支付"时才真正占用任务名额（openBill/openPayment 会再调本函数）。
 
     // 同一领地多任务：默认允许（allow_multi_task_per_land = true）；
     // 关闭该开关后恢复旧行为：一个领地同时只允许一个任务。
@@ -509,24 +490,53 @@ std::string TaskManager::checkCreateAllowed(Player const& player, int64_t landId
     return {};
 }
 
-void TaskManager::storeBill(PendingBill bill) {
-    auto landId = bill.plan.landId;
-    if (auto* existing = billOfLand(landId); existing) {
-        *existing = std::move(bill);
-    } else {
-        mBills.push_back(std::move(bill));
+std::vector<PendingBill*> TaskManager::billsOfLand(int64_t landId) {
+    std::vector<PendingBill*> out;
+    for (auto& bill : mBills) {
+        if (bill.plan.landId == landId) {
+            out.push_back(&bill); // mBills 按创建顺序存放（id 递增）
+        }
     }
-    if (auto* stored = billOfLand(landId); stored) {
-        db::upsertBill(*stored);
-    }
+    return out;
 }
 
-bool TaskManager::dropBill(int64_t landId) {
+std::vector<PendingBill const*> TaskManager::billsOfLand(int64_t landId) const {
+    std::vector<PendingBill const*> out;
+    for (auto const& bill : mBills) {
+        if (bill.plan.landId == landId) {
+            out.push_back(&bill);
+        }
+    }
+    return out;
+}
+
+PendingBill* TaskManager::billById(int64_t billId) {
+    for (auto& bill : mBills) {
+        if (bill.id == billId) {
+            return &bill;
+        }
+    }
+    return nullptr;
+}
+
+void TaskManager::storeBill(PendingBill bill) {
+    // 同一领地允许多张账单：这里只追加，绝不覆盖已有账单
+    if (bill.id == 0) {
+        bill.id = mNextBillId++;
+    } else if (bill.id >= mNextBillId) {
+        mNextBillId = bill.id + 1;
+    }
+    mBills.push_back(std::move(bill));
+    db::upsertBill(mBills.back());
+    db::setMetaInt("next_bill_id", mNextBillId);
+}
+
+bool TaskManager::dropBill(int64_t billId) {
     auto before = mBills.size();
-    std::erase_if(mBills, [&](PendingBill const& b) { return b.plan.landId == landId; });
+    std::erase_if(mBills, [&](PendingBill const& b) { return b.id == billId; });
     bool removed = mBills.size() != before;
     if (removed) {
-        db::deleteBill(landId);
+        db::deleteBill(billId);
     }
     return removed;
 }
@@ -537,8 +547,9 @@ std::string TaskManager::listBills() const {
     }
     std::string out;
     for (auto const& bill : mBills) {
-        out += " - [待支付] 领地#" + std::to_string(bill.plan.landId) + " 领主 " + bill.ownerName + " 金额 "
-             + std::to_string(bill.plan.totalPrice) + " 层数 " + std::to_string(bill.plan.layerCount) + "\n";
+        out += " - [待支付] 账单#" + std::to_string(bill.id) + " 领地#" + std::to_string(bill.plan.landId)
+             + " 领主 " + bill.ownerName + " 金额 " + std::to_string(bill.plan.totalPrice) + " 层数 "
+             + std::to_string(bill.plan.layerCount) + "\n";
     }
     return out;
 }
@@ -1992,6 +2003,14 @@ void TaskManager::loadState() {
     if (mNextId == 0) {
         mNextId = 1;
     }
+
+    // 账单 id 续号：优先用 meta，缺失时按已加载的最大 id + 1 兜底
+    mNextBillId = db::getMetaInt("next_bill_id", 0);
+    int64_t maxBillId = 0;
+    for (auto const& bill : mBills) {
+        maxBillId = std::max(maxBillId, bill.id);
+    }
+    mNextBillId = std::max({mNextBillId, maxBillId + 1, (int64_t)1});
 
     if (!mBills.empty() || !mTasks.empty()) {
         log::get().info(

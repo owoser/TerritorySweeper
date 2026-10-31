@@ -110,7 +110,7 @@ void applyPoint(Player& player, PlayerLand const& land, BlockPos const& pos) {
 struct StickContext {
     std::optional<PlayerLand>     land;
     std::vector<SweepTask*>       tasks; ///< 该领地内的全部任务（允许多个）
-    PendingBill*                  bill{nullptr};
+    std::vector<PendingBill*>     bills; ///< 该领地内的全部待支付账单（允许多张）
     std::optional<SelectionState> selection;
     bool                          enabled{false};
 };
@@ -132,12 +132,12 @@ StickContext resolveStickContext(Player& player) {
     if (auto land = resolveLandUnderPlayer(player); land) {
         auto& manager = TaskManager::getInstance();
         context.tasks = manager.tasksOfLand(land->key);
-        context.bill  = manager.billOfLand(land->key);
+        context.bills = manager.billsOfLand(land->key);
         context.land  = std::move(land);
     }
 
     bool const hasSelection = context.selection && context.selection->active;
-    context.enabled         = hasSelection || !context.tasks.empty() || context.bill != nullptr;
+    context.enabled         = hasSelection || !context.tasks.empty() || !context.bills.empty();
     return context;
 }
 
@@ -193,27 +193,29 @@ void handleStickUse(Player& player, BlockPos const& pos) {
         return;
     }
 
-    if (!context.tasks.empty()) {
-        // 领地内同时有待支付账单时，也要进选择菜单：否则账单被任务分支永久遮挡，
-        // "任务 + 账单"共存（多任务放开后才会出现）时账单将无法支付。
-        bool const needPicker = context.tasks.size() > 1 || context.bill != nullptr;
-        if (needPicker) {
-            TS_DBG(
-                "[interact] 领地#{} 有 {} 个任务 / 账单={} → 打开选择菜单",
-                context.land->key,
-                context.tasks.size(),
-                context.bill ? "是" : "否"
-            );
-            form::openTaskPicker(player, *context.land);
-        } else {
+    size_t const totalEntries = context.tasks.size() + context.bills.size();
+
+    // 只有 1 个条目：保持旧行为（任务直连管理面板，账单直连账单面板）
+    if (totalEntries == 1) {
+        if (context.tasks.size() == 1) {
             TS_DBG("[interact] 命中任务 #{} → 打开管理面板", context.tasks.front()->id);
             form::openManage(player, *context.tasks.front());
+        } else {
+            TS_DBG("[interact] 命中账单 #{} → 打开账单面板", context.bills.front()->id);
+            form::openBill(player, *context.bills.front());
         }
         return;
     }
 
-    if (context.bill) {
-        form::openBill(player, *context.bill);
+    // 2 个及以上（任务与账单合计）：统一进「领地清扫任务列表」逐条选择
+    if (totalEntries >= 2) {
+        TS_DBG(
+            "[interact] 领地#{} 有 {} 个任务 / {} 张账单 → 打开领地任务列表",
+            context.land->key,
+            context.tasks.size(),
+            context.bills.size()
+        );
+        form::openLandTaskList(player, *context.land);
         return;
     }
 }

@@ -218,7 +218,7 @@ void openCostDetail(Player& player, SweepPlan plan) {
 // 4. 二次确认 / 支付
 // ---------------------------------------------------------------------------
 
-void openPayment(Player& player, SweepPlan plan) {
+void openPayment(Player& player, SweepPlan plan, int64_t srcBillId) {
     auto& economyService = economy::EconomyService::getInstance();
 
     economy::ChargeTarget target;
@@ -235,29 +235,29 @@ void openPayment(Player& player, SweepPlan plan) {
         "玩家当前余额：" + (readOk ? money(balance) : std::string("§c读取失败")) + "\n"
         "支付后端：" + economyService.describe() + "\n"
         "状态：" + (enough ? "§a余额充足" : "§c余额不足，无法立即支付") + "\n\n"
-        "§7选择『挂起账单』可保存本次配置，稍后回到本领地使用木棍点击即可继续支付。";
+        "§7选择『挂起账单』可保存本次配置，稍后在「领地清扫任务列表」中继续支付。";
 
     SimpleForm form("清扫费用二次确认");
     form.setContent(content);
 
     auto planCopy = plan;
 
-    form.appendButton("§0立即支付", [planCopy, target](Player& p) {
+    form.appendButton("§0立即支付", [planCopy, target, srcBillId](Player& p) {
         auto& service = economy::EconomyService::getInstance();
 
         if (!service.available()) {
             p.sendMessage("§c支付失败：经济系统不可用（" + service.describe() + "）。");
-            openPayment(p, planCopy);
+            openPayment(p, planCopy, srcBillId);
             return;
         }
         if (!service.hasEnough(target, planCopy.totalPrice)) {
             p.sendMessage("§c余额不足，无法立即支付，请充值后重试。");
-            openPayment(p, planCopy);
+            openPayment(p, planCopy, srcBillId);
             return;
         }
         // 支付前再校验一次名额：从选点/挂起账单到付款之间，名额可能已被其它任务占满，
-        // 必须保证"扣了钱就一定能把任务建出来"。（忽略账单判定：本领地若有账单，本次支付就会消费它）
-        if (auto reject = TaskManager::getInstance().checkCreateAllowed(p, planCopy.landId, true); !reject.empty()) {
+        // 必须保证"扣了钱就一定能把任务建出来"。
+        if (auto reject = TaskManager::getInstance().checkCreateAllowed(p, planCopy.landId); !reject.empty()) {
             p.sendMessage("§c[领地清扫] " + reject);
             p.sendMessage("§7本次未扣款。");
             return;
@@ -265,11 +265,14 @@ void openPayment(Player& player, SweepPlan plan) {
 
         if (!service.reduce(target, planCopy.totalPrice)) {
             p.sendMessage("§c扣款失败，请检查经济系统或联系管理员。");
-            openPayment(p, planCopy);
+            openPayment(p, planCopy, srcBillId);
             return;
         }
 
-        TaskManager::getInstance().dropBill(planCopy.landId);
+        // 只在"本单来自某张挂起账单"时删除对应账单（不能按领地删，否则会误删同领地其它账单）
+        if (srcBillId > 0) {
+            TaskManager::getInstance().dropBill(srcBillId);
+        }
         auto* task = TaskManager::getInstance().startTask(p, planCopy, true);
         if (!task) {
             p.sendMessage("§c任务创建失败，费用已扣除，请联系管理员处理。");
@@ -284,7 +287,7 @@ void openPayment(Player& player, SweepPlan plan) {
         );
     });
 
-    form.appendButton("§0挂起账单", [planCopy, target](Player& p) {
+    form.appendButton("§0挂起账单", [planCopy, target, srcBillId](Player& p) {
         PendingBill bill;
         bill.ownerName = target.name;
         bill.ownerXuid = target.xuid;
@@ -292,10 +295,14 @@ void openPayment(Player& player, SweepPlan plan) {
         bill.plan      = planCopy;
         bill.createdAt = (int64_t)std::time(nullptr);
 
+        // 若本次来自已有账单（如余额不足跳回费用页），先替换旧账单，避免同一计划堆叠两份
+        if (srcBillId > 0) {
+            TaskManager::getInstance().dropBill(srcBillId);
+        }
         TaskManager::getInstance().storeBill(bill);
         SelectionManager::getInstance().clear(p);
         p.sendMessage(
-            "§6[领地清扫] 已挂起账单。回到本领地用手持木棍点击地面，在菜单中选择「支付待支付账单」即可继续支付。"
+            "§6[领地清扫] 已挂起账单。用手持木棍点击地面，在「领地清扫任务列表」中选择该账单即可继续支付。"
         );
     });
 
@@ -380,17 +387,18 @@ void openManage(Player& player, SweepTask& task) {
 
     form.appendButton("§0停止任务", [id](Player& p) { openKillConfirm(p, id); });
 
-    // 同一领地有多个任务或存在待支付账单时，提供返回选择菜单的入口
+    // 同一领地任务+账单合计超过 1 个时，提供返回列表的入口
     int64_t const landKey = task.plan.landId;
-    if (TaskManager::getInstance().tasksOfLand(landKey).size() > 1
-        || TaskManager::getInstance().billOfLand(landKey) != nullptr) {
+    if (TaskManager::getInstance().tasksOfLand(landKey).size()
+            + TaskManager::getInstance().billsOfLand(landKey).size()
+        > 1) {
         form.appendButton("§0返回任务列表", [landKey](Player& p) {
             auto land = resolveLandUnderPlayer(p);
             if (!land || land->key != landKey) {
                 p.sendMessage("§c[领地清扫] 请先回到领地内再查看任务列表。");
                 return;
             }
-            openTaskPicker(p, *land);
+            openLandTaskList(p, *land);
         });
     }
 
@@ -433,10 +441,11 @@ void openKillConfirm(Player& player, uint64_t taskId) {
 // ---------------------------------------------------------------------------
 
 void openBill(Player& player, PendingBill const& bill) {
-    auto plan = bill.plan;
+    auto    plan   = bill.plan;
+    int64_t billId = bill.id;
 
     std::string content =
-        "§6本领地存在待支付账单\n"
+        "§6本领地存在待支付账单" + std::string{billId > 0 ? " #" + std::to_string(billId) : ""} + "\n"
         "收费等级：" + plan.levelname + "\n"
         "层数：" + std::to_string(plan.layerCount) + " 层\n"
         "方向：" + toString(plan.direction) + "\n"
@@ -447,7 +456,7 @@ void openBill(Player& player, PendingBill const& bill) {
     SimpleForm form("领地清扫账单");
     form.setContent(content);
 
-    form.appendButton("§0立即支付", [plan](Player& p) {
+    form.appendButton("§0立即支付", [plan, billId](Player& p) {
         auto& service = economy::EconomyService::getInstance();
 
         economy::ChargeTarget target;
@@ -456,7 +465,7 @@ void openBill(Player& player, PendingBill const& bill) {
         target.uuid = p.getUuid();
 
         // 与 openPayment 一致：扣款前再校验名额，避免"钱扣了、任务建不出来"
-        if (auto reject = TaskManager::getInstance().checkCreateAllowed(p, plan.landId, true); !reject.empty()) {
+        if (auto reject = TaskManager::getInstance().checkCreateAllowed(p, plan.landId); !reject.empty()) {
             p.sendMessage("§c[领地清扫] " + reject);
             p.sendMessage("§7本次未扣款。");
             return;
@@ -464,7 +473,7 @@ void openBill(Player& player, PendingBill const& bill) {
 
         if (!service.hasEnough(target, plan.totalPrice)) {
             p.sendMessage("§c余额不足，无法支付该账单。");
-            openPayment(p, plan);
+            openPayment(p, plan, billId); // 带上账单 id：在费用页支付成功后要删掉这张账单
             return;
         }
         if (!service.reduce(target, plan.totalPrice)) {
@@ -472,7 +481,7 @@ void openBill(Player& player, PendingBill const& bill) {
             return;
         }
 
-        TaskManager::getInstance().dropBill(plan.landId);
+        TaskManager::getInstance().dropBill(billId);
         auto* task = TaskManager::getInstance().startTask(p, plan, true);
         if (!task) {
             p.sendMessage("§c任务创建失败，费用已扣除，请联系管理员处理。");
@@ -483,8 +492,8 @@ void openBill(Player& player, PendingBill const& bill) {
 
     form.appendButton("§0保留账单", [](Player& p) { p.sendMessage("§7账单已保留，稍后可再次支付。"); });
 
-    form.appendButton("§0关闭账单", [plan](Player& p) {
-        TaskManager::getInstance().dropBill(plan.landId);
+    form.appendButton("§0关闭账单", [billId](Player& p) {
+        TaskManager::getInstance().dropBill(billId);
         SelectionManager::getInstance().clear(p);
         p.sendMessage("§7账单已关闭。");
     });
@@ -498,9 +507,11 @@ void openBill(Player& player, PendingBill const& bill) {
 
 void openTaskList(Player& player) {
     auto&       manager = TaskManager::getInstance();
-    std::string content = "§e进行中的任务§r\n" + manager.listTasks() + "\n§e待支付账单§r\n" + manager.listBills();
+    std::string content = "§7领地内请用手持木棍点击地面，打开「领地清扫任务列表」逐条管理。\n\n"
+                          "§e进行中的任务§r\n"
+                        + manager.listTasks() + "\n§e待支付账单§r\n" + manager.listBills();
 
-    SimpleForm form("领地清扫任务列表");
+    SimpleForm form("全服清扫任务总览");
     form.setContent(content);
     form.appendButton("§0关闭", [](Player&) {});
     form.sendTo(player);
@@ -510,26 +521,45 @@ void openTaskList(Player& player) {
 // 8. 领地任务选择菜单（木棍点击多任务 / 有账单时进入）
 // ---------------------------------------------------------------------------
 
-void openTaskPicker(Player& player, PlayerLand const& land) {
+void openLandTaskList(Player& player, PlayerLand const& land) {
     auto& manager = TaskManager::getInstance();
-    auto  tasks   = manager.tasksOfLand(land.key);
 
-    std::string content = "§e" + land.land.name + "§r 共有 " + std::to_string(tasks.size()) + " 个清扫任务\n\n";
-    for (auto* task : tasks) {
-        content += " - #" + std::to_string(task->id) + " " + toString(task->state) + " | 进度 "
-                 + percentText(task->progressPercent()) + "（" + std::to_string(task->layersDone) + "/"
-                 + std::to_string(task->plan.layerCount) + " 层）\n";
-    }
-    content += "\n§7选择要管理的任务，或新建一个清扫任务。";
+    auto tasks = manager.tasksOfLand(land.key);
+    auto bills = manager.billsOfLand(land.key);
 
-    SimpleForm form("领地清扫任务");
+    std::string content = "§e" + land.land.name + "§r\n"
+                          "共 §f" + std::to_string(tasks.size()) + " §r个清扫任务、§f"
+                        + std::to_string(bills.size()) + " §r张待支付账单\n\n"
+                          "§7点击条目进入管理；暂停中的任务会显示释放倒计时。";
+
+    SimpleForm form("领地清扫任务列表");
     form.setContent(content);
 
+    // ---- 任务条目：第一行身份/状态，第二行进度摘要 ----
     for (auto* task : tasks) {
-        uint64_t const id    = task->id;
-        std::string    label = "§0#" + std::to_string(id) + " · " + toString(task->state) + " · "
-                             + percentText(task->progressPercent());
-        form.appendButton(label, [id](Player& p) {
+        uint64_t const id = task->id;
+
+        // 按钮背景偏亮：文字统一用黑色 §0（AGENT.md §3.7 铁律），层级靠换行与措辞区分
+        std::string line1 = "§0任务#" + std::to_string(id) + " · ";
+        std::string line2;
+
+        if (task->state == TaskState::Paused) {
+            auto const info = describePhase(*task);
+            line1 += "已暂停";
+            line2 = "§0释放倒计时 " + std::to_string(info.remainSeconds) + "s · 进度 "
+                  + percentText(task->progressPercent());
+        } else if (task->finalizing) {
+            line1 += "收尾清理";
+            line2 = "§0进度 " + percentText(task->progressPercent());
+        } else {
+            int const total = std::max(1, task->plan.layerCount);
+            int const cur   = std::min(task->layersDone + 1, total);
+            line1 += "进行中";
+            line2 = "§0进度 " + percentText(task->progressPercent()) + " · 第 " + std::to_string(cur) + "/"
+                  + std::to_string(total) + " 层";
+        }
+
+        form.appendButton(line1 + "\n" + line2, [id](Player& p) {
             if (auto* found = TaskManager::getInstance().taskById(id); found) {
                 openManage(p, *found);
             } else {
@@ -538,19 +568,16 @@ void openTaskPicker(Player& player, PlayerLand const& land) {
         });
     }
 
-    // 同一领地可能同时存在"任务 + 待支付账单"（多任务放开后才出现的组合），
-    // 账单必须在这里给入口，否则木棍只会命中任务分支，账单永远付不掉。
-    if (auto const* bill = manager.billOfLand(land.key); bill) {
-        int64_t const amount  = bill->plan.totalPrice;
-        int64_t const landKey = land.key;
-        form.appendButton("§6支付待支付账单 · " + money(amount), [landKey](Player& p) {
-            auto current = resolveLandUnderPlayer(p);
-            if (!current || current->key != landKey) {
-                p.sendMessage("§c[领地清扫] 你已不在该领地内，请回到领地后再支付。");
-                return;
-            }
-            // 表单可能停留一段时间：重新取一次账单，避免支付已被消费的旧账单
-            if (auto const* latest = TaskManager::getInstance().billOfLand(landKey); latest) {
+    // ---- 账单条目：第一行身份/状态，第二行规模/金额 ----
+    for (auto const* bill : bills) {
+        int64_t const billId = bill->id;
+
+        std::string line1 = "§0账单#" + std::to_string(billId) + " · 待支付";
+        std::string line2 = "§0" + bill->plan.levelname + " · " + std::to_string(bill->plan.layerCount) + " 层 · "
+                          + money(bill->plan.totalPrice);
+
+        form.appendButton(line1 + "\n" + line2, [billId](Player& p) {
+            if (auto* latest = TaskManager::getInstance().billById(billId); latest) {
                 openBill(p, *latest);
             } else {
                 p.sendMessage("§7[领地清扫] 该账单已不存在（可能已支付或已关闭）。");
@@ -559,6 +586,18 @@ void openTaskPicker(Player& player, PlayerLand const& land) {
     }
 
     int64_t const landKey = land.key;
+
+    // ---- 刷新：按最新数据重开本列表 ----
+    form.appendButton("§0刷新", [landKey](Player& p) {
+        auto current = resolveLandUnderPlayer(p);
+        if (!current || current->key != landKey) {
+            p.sendMessage("§c[领地清扫] 你已不在该领地内，无法刷新领地任务列表。");
+            return;
+        }
+        openLandTaskList(p, *current);
+    });
+
+    // ---- 新建清扫任务 ----
     form.appendButton("§0新建清扫任务", [landKey](Player& p) {
         // 菜单可能停留一段时间：这里重新解析脚下领地，避免用过期上下文
         auto current = resolveLandUnderPlayer(p);

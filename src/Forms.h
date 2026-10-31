@@ -26,7 +26,8 @@ void openLayerInput(Player& player, SweepDirection direction, PlayerLand const& 
 void openCostDetail(Player& player, SweepPlan plan);
 
 /// 打开"费用二次确认"（支付 / 挂起 / 关闭）
-void openPayment(Player& player, SweepPlan plan);
+/// @param srcBillId 非 0 表示本次支付来自该挂起账单（支付成功后删除它；挂起时替换它）
+void openPayment(Player& player, SweepPlan plan, int64_t srcBillId = 0);
 
 /// 打开"领地清扫管理"（暂停或继续、终止、关闭）
 void openManage(Player& player, SweepTask& task);
@@ -40,8 +41,8 @@ void openBill(Player& player, PendingBill const& bill);
 /// 打开任务列表（全服任务与账单）
 void openTaskList(Player& player);
 
-/// 打开"本领地任务选择"
-/// 同一领地存在多个任务时，先让玩家选择要管理的任务，并提供"新建清扫任务"入口
-void openTaskPicker(Player& player, PlayerLand const& land);
+/// 打开"领地清扫任务列表"（任务 + 待支付账单的统一入口）
+/// 条目按钮为两行：第一行身份/状态，第二行进度/规模/金额；并提供「刷新」按钮按最新数据重开
+void openLandTaskList(Player& player, PlayerLand const& land);
 
 } // namespace ts::form

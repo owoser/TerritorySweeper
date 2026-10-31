@@ -186,8 +186,9 @@ bool isChunkEmptyAtLayer(
 /// 按未完成比例计算应退金额（以实际扣款额 paidAmount 为基准，向下取整）
 [[nodiscard]] int64_t computeRefund(SweepTask const& task);
 
-/// 挂起账单
+/// 挂起账单（同一领地允许多张，按 id 区分）
 struct PendingBill {
+    int64_t     id{0}; ///< 数据库主键（0 表示尚未入库）
     std::string ownerName;
     std::string ownerXuid;
     mce::UUID   ownerUuid{};
@@ -227,19 +228,22 @@ public:
     /// 该玩家的全部任务（按 id 升序）
     [[nodiscard]] std::vector<SweepTask*> tasksOfPlayer(mce::UUID const& uuid);
     [[nodiscard]] SweepTask*  taskById(uint64_t id);
-    [[nodiscard]] PendingBill* billOfLand(int64_t landId);
-    [[nodiscard]] PendingBill const* billOfLand(int64_t landId) const;
+    /// 该领地内的全部待支付账单（按 id 升序）
+    [[nodiscard]] std::vector<PendingBill*> billsOfLand(int64_t landId);
+    [[nodiscard]] std::vector<PendingBill const*> billsOfLand(int64_t landId) const;
+    [[nodiscard]] PendingBill* billById(int64_t billId);
 
     /// 该坐标是否落在某个任务（运行中或已暂停）的清理范围内（液体拦截用）
     [[nodiscard]] bool isInsideActiveTask(int dimId, BlockPos const& pos) const;
 
     /// 返回空串表示允许创建；否则为拒绝原因
-    /// @param ignoreBill 为 true 时跳过"领地有挂起账单"判定（支付流程里该账单即将被本次支付消费）
-    [[nodiscard]] std::string checkCreateAllowed(Player const& player, int64_t landId, bool ignoreBill = false) const;
+    /// 说明：挂起账单不占任务名额，也不阻止新建任务（多账单下才有意义），支付时才校验名额
+    [[nodiscard]] std::string checkCreateAllowed(Player const& player, int64_t landId) const;
 
     // ---------------- 账单 ----------------
+    /// 追加一张挂起账单（分配 id 并入库）；同一领地允许多张
     void   storeBill(PendingBill bill);
-    bool   dropBill(int64_t landId);
+    bool   dropBill(int64_t billId);
     [[nodiscard]] std::string listBills() const;
 
     // ---------------- 任务 ----------------
@@ -308,6 +312,7 @@ private:
     std::vector<SweepTask>   mTasks;
     std::vector<PendingBill> mBills;
     uint64_t                 mNextId{1};
+    int64_t                  mNextBillId{1}; ///< 挂起账单的自增 id
     int64_t                  mLastTick{0};
 };
 

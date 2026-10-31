@@ -21,15 +21,15 @@ bool initSchema();
 /// 读取全部任务（按 id 升序）。同一领地允许多个任务，不做 land_id 去重。
 std::vector<SweepTask> loadTasks();
 
-/// 读取全部待支付账单（按 land_id）
+/// 读取全部待支付账单（按 bill_id 升序）；同一领地可有多张
 std::vector<PendingBill> loadBills();
 
 bool upsertTask(SweepTask const& task);
 bool flushDirtyTasks(std::vector<SweepTask>& tasks);
-bool upsertBill(PendingBill const& bill);
+bool upsertBill(PendingBill const& bill); ///< 按 bill.id 写入（id=0 时插入并回填）
 
 bool deleteTask(uint64_t id);
-bool deleteBill(int64_t landId);
+bool deleteBill(int64_t billId);
 
 int64_t getMetaInt(std::string_view key, int64_t fallback);
 bool    setMetaInt(std::string_view key, int64_t value);
