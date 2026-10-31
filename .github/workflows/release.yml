@@ -29,7 +29,8 @@ jobs:
         shell: pwsh
         run: |
           $tag = '${{ github.ref_name }}'
-          if ($tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
+          # 预发布标识里允许再出现连字符（如 v0.0.0-ci-test / v1.0.0-rc-1），也允许 +build 元数据
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') {
             Write-Error "tag $tag 不是合法版本号，应形如 v1.2.3 或 v1.2.3-beta.1"
             exit 1
           }
