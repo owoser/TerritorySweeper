@@ -100,7 +100,7 @@ void openDirection(Player& player, PlayerLand const& land, SelectionState const&
         "\n选区：X " + std::to_string(selection.pos1.x) + " ~ " + std::to_string(selection.pos2.x) + "   Z "
         + std::to_string(selection.pos1.z) + " ~ " + std::to_string(selection.pos2.z);
 
-    ModalForm form("领地清扫任务", content, "§a向上清理", "§b向下清理");
+    ModalForm form("领地清扫任务", content, "§2向上清理", "§1向下清理");
 
     auto landCopy      = land;
     auto selectionCopy = selection;
@@ -201,7 +201,7 @@ void openCostDetail(Player& player, SweepPlan plan) {
         content += "\n§c注意：选区超出已配置的最大规格，已按最大规格计费。";
     }
 
-    ModalForm form("清扫任务费用", content, "确定", "返回");
+    ModalForm form("清扫任务费用", content, "§2确定", "§0返回");
     form.sendTo(
         player,
         [plan](Player& p, ll::form::ModalFormResult result, ll::form::FormCancelReason) {
@@ -242,7 +242,7 @@ void openPayment(Player& player, SweepPlan plan, int64_t srcBillId) {
 
     auto planCopy = plan;
 
-    form.appendButton("§0立即支付", [planCopy, target, srcBillId](Player& p) {
+    form.appendButton("§2立即支付", [planCopy, target, srcBillId](Player& p) {
         auto& service = economy::EconomyService::getInstance();
 
         if (!service.available()) {
@@ -287,7 +287,7 @@ void openPayment(Player& player, SweepPlan plan, int64_t srcBillId) {
         );
     });
 
-    form.appendButton("§0挂起账单", [planCopy, target, srcBillId](Player& p) {
+    form.appendButton("§1挂起账单", [planCopy, target, srcBillId](Player& p) {
         PendingBill bill;
         bill.ownerName = target.name;
         bill.ownerXuid = target.xuid;
@@ -373,18 +373,18 @@ void openManage(Player& player, SweepTask& task) {
 
     if (task.state == TaskState::Running) {
         // pauseTask / resumeTask 内部已发送带任务号的提示，这里不再重复发送
-        form.appendButton("§0暂停任务", [id](Player& p) {
+        form.appendButton("§1暂停任务", [id](Player& p) {
             TaskManager::getInstance().pauseTask(id, "领主手动暂停");
         });
     } else {
-        form.appendButton("§0继续任务", [id](Player& p) {
+        form.appendButton("§2继续任务", [id](Player& p) {
             if (!TaskManager::getInstance().resumeTask(id)) {
                 p.sendMessage("§c[领地清扫] 任务 #" + std::to_string(id) + " 不存在或已结束。");
             }
         });
     }
 
-    form.appendButton("§0停止任务", [id](Player& p) { openKillConfirm(p, id); });
+    form.appendButton("§c停止任务", [id](Player& p) { openKillConfirm(p, id); });
 
     // 同一领地任务+账单合计超过 1 个时，提供返回列表的入口
     int64_t const landKey = task.plan.landId;
@@ -425,7 +425,7 @@ void openKillConfirm(Player& player, uint64_t taskId) {
         "§c终止后已清理区域不会恢复。";
 
     std::string const title = "终止清扫任务";
-    ModalForm           form(title, content, "§c确定终止", "§7返回");
+    ModalForm           form(title, content, "§c确定终止", "§0返回");
     form.sendTo(player, [taskId](Player& p, ll::form::ModalFormResult result, ll::form::FormCancelReason) {
         if (!result || *result != ll::form::ModalFormSelectedButton::Upper) {
             p.sendMessage("§7已取消终止操作。");
@@ -455,7 +455,7 @@ void openBill(Player& player, PendingBill const& bill) {
     SimpleForm form("领地清扫账单");
     form.setContent(content);
 
-    form.appendButton("§0立即支付", [plan, billId](Player& p) {
+    form.appendButton("§2立即支付", [plan, billId](Player& p) {
         auto& service = economy::EconomyService::getInstance();
 
         economy::ChargeTarget target;
@@ -491,7 +491,7 @@ void openBill(Player& player, PendingBill const& bill) {
 
     form.appendButton("§0保留账单", [](Player& p) { p.sendMessage("§7账单已保留，稍后可再次支付。"); });
 
-    form.appendButton("§0关闭账单", [billId](Player& p) {
+    form.appendButton("§c关闭账单", [billId](Player& p) {
         TaskManager::getInstance().dropBill(billId);
         SelectionManager::getInstance().clear(p);
         p.sendMessage("§7账单已关闭。");
@@ -544,16 +544,16 @@ void openLandTaskList(Player& player, PlayerLand const& land) {
 
         if (task->state == TaskState::Paused) {
             auto const info = describePhase(*task);
-            line1 += "已暂停";
+            line1 += "§6已暂停";
             line2 = "§0释放倒计时 " + std::to_string(info.remainSeconds) + "s · 进度 "
                   + percentText(task->progressPercent());
         } else if (task->finalizing) {
-            line1 += "收尾清理";
+            line1 += "§6收尾清理";
             line2 = "§0进度 " + percentText(task->progressPercent());
         } else {
             int const total = std::max(1, task->plan.layerCount);
             int const cur   = std::min(task->layersDone + 1, total);
-            line1 += "进行中";
+            line1 += "§2进行中";
             line2 = "§0进度 " + percentText(task->progressPercent()) + " · 第 " + std::to_string(cur) + "/"
                   + std::to_string(total) + " 层";
         }
@@ -571,7 +571,7 @@ void openLandTaskList(Player& player, PlayerLand const& land) {
     for (auto const* bill : bills) {
         int64_t const billId = bill->id;
 
-        std::string line1 = "§0账单#" + std::to_string(billId) + " · 待支付";
+        std::string line1 = "§0账单#" + std::to_string(billId) + " · §6待支付";
         std::string line2 = "§0" + planSizeText(bill->plan) + " · " + std::to_string(bill->plan.layerCount) + " 层 · "
                           + money(bill->plan.totalPrice);
 
@@ -587,7 +587,7 @@ void openLandTaskList(Player& player, PlayerLand const& land) {
     int64_t const landKey = land.key;
 
     // ---- 刷新：按最新数据重开本列表 ----
-    form.appendButton("§0刷新", [landKey](Player& p) {
+    form.appendButton("§2刷新", [landKey](Player& p) {
         auto current = resolveLandUnderPlayer(p);
         if (!current || current->key != landKey) {
             p.sendMessage("§c[领地清扫] 你已不在该领地内，无法刷新领地任务列表。");
@@ -597,7 +597,7 @@ void openLandTaskList(Player& player, PlayerLand const& land) {
     });
 
     // ---- 新建清扫任务 ----
-    form.appendButton("§0新建清扫任务", [landKey](Player& p) {
+    form.appendButton("§2新建清扫任务", [landKey](Player& p) {
         // 菜单可能停留一段时间：这里重新解析脚下领地，避免用过期上下文
         auto current = resolveLandUnderPlayer(p);
         if (!current || current->key != landKey) {

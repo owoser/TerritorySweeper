@@ -346,7 +346,7 @@ TaskManager& TaskManager::getInstance() {
     return instance;
 }
 
-Player* TaskManager::findOwner(SweepTask const& task) const {
+Player* TaskManager::findPlayerByUuid(mce::UUID const& uuid) const {
     auto level = ll::service::getLevel();
     if (!level) {
         return nullptr;
@@ -356,12 +356,14 @@ Player* TaskManager::findOwner(SweepTask const& task) const {
             continue;
         }
         auto& player = static_cast<Player&>(*actor);
-        if (player.getUuid() == task.ownerUuid) {
+        if (player.getUuid() == uuid) {
             return &player;
         }
     }
     return nullptr;
 }
+
+Player* TaskManager::findOwner(SweepTask const& task) const { return findPlayerByUuid(task.ownerUuid); }
 
 int TaskManager::runningOrPausedCount() const { return (int)mTasks.size(); }
 
@@ -510,6 +512,16 @@ std::vector<PendingBill const*> TaskManager::billsOfLand(int64_t landId) const {
     return out;
 }
 
+std::vector<PendingBill const*> TaskManager::billsOfPlayer(mce::UUID const& uuid) const {
+    std::vector<PendingBill const*> out;
+    for (auto const& bill : mBills) {
+        if (bill.ownerUuid == uuid) {
+            out.push_back(&bill);
+        }
+    }
+    return out;
+}
+
 PendingBill* TaskManager::billById(int64_t billId) {
     for (auto& bill : mBills) {
         if (bill.id == billId) {
@@ -529,14 +541,35 @@ void TaskManager::storeBill(PendingBill bill) {
     mBills.push_back(std::move(bill));
     db::upsertBill(mBills.back());
     db::setMetaInt("next_bill_id", mNextBillId);
+
+    // 立即刷新领主看板：账单线框要马上出现，而不是等下一次 tick
+    if (auto* owner = findPlayerByUuid(mBills.back().ownerUuid); owner) {
+        refreshBoard(*owner);
+    }
 }
 
 bool TaskManager::dropBill(int64_t billId) {
+    mce::UUID ownerUuid{};
+    bool      hasOwner = false;
+    for (auto const& bill : mBills) {
+        if (bill.id == billId) {
+            ownerUuid = bill.ownerUuid;
+            hasOwner  = true;
+            break;
+        }
+    }
+
     auto before = mBills.size();
     std::erase_if(mBills, [&](PendingBill const& b) { return b.id == billId; });
     bool removed = mBills.size() != before;
     if (removed) {
         db::deleteBill(billId);
+        // 立即刷新：账单线框要马上消失，不能等到下一次 tick
+        if (hasOwner) {
+            if (auto* owner = findPlayerByUuid(ownerUuid); owner) {
+                refreshBoard(*owner);
+            }
+        }
     }
     return removed;
 }
@@ -723,6 +756,12 @@ mce::Color frameColorForTask(uint64_t taskId) {
 /// 任务线框的 RegionRenderer key（每个任务独立一条）
 std::string frameKeyOf(uint64_t taskId) { return "task-frame-" + std::to_string(taskId); }
 
+/// 账单线框固定红色：语义是"待支付"，且与任务调色板任一色都不撞
+mce::Color billFrameColor() { return mce::Color{255, 90, 90, 190}; }
+
+/// 账单线框的 RegionRenderer key（每张账单独立一条）
+std::string billFrameKeyOf(int64_t billId) { return "bill-frame-" + std::to_string(billId); }
+
 /// 槽位对应的稳定 bossId：同一个槽位永远复用同一条 BossBar
 int64_t slotBossId(int slotIndex) { return visual::BossBar::idFor("bar-slot-" + std::to_string(slotIndex)); }
 
@@ -857,7 +896,11 @@ void TaskManager::renderSlot(Player& player, int slotIndex, SweepTask& task, boo
     slot.taskId = task.id;
 }
 
-void TaskManager::refreshFrames(Player& player, std::vector<SweepTask*> const& tasks) {
+void TaskManager::refreshFrames(
+    Player&                                player,
+    std::vector<SweepTask*> const&         tasks,
+    std::vector<PendingBill const*> const& bills
+) {
     auto const& cfg   = ConfigManager::getInstance().get();
     auto&       board = mBoards[player.getUuid().asString()];
 
@@ -866,6 +909,10 @@ void TaskManager::refreshFrames(Player& player, std::vector<SweepTask*> const& t
             visual::RegionRenderer::clearBox(player, frameKeyOf(id));
         }
         board.framedTasks.clear();
+        for (int64_t id : board.framedBills) {
+            visual::RegionRenderer::clearBox(player, billFrameKeyOf(id));
+        }
+        board.framedBills.clear();
     };
 
     if (!cfg.regionFrameEnabled) {
@@ -873,37 +920,61 @@ void TaskManager::refreshFrames(Player& player, std::vector<SweepTask*> const& t
         return;
     }
 
-    // 新出现的任务：每任务画一条独立颜色的框（只画一次，避免每秒刷包）
-    std::unordered_set<uint64_t> alive;
-    alive.reserve(tasks.size());
+    auto drawFrame = [&](std::string const& key, SweepPlan const& plan, mce::Color const& color) {
+        visual::RegionRenderer::drawBox(
+            player,
+            key,
+            AABB{
+                Vec3{(float)plan.minX, (float)plan.minY, (float)plan.minZ},
+                Vec3{(float)plan.maxX + 1.0f, (float)plan.maxY + 1.0f, (float)plan.maxZ + 1.0f}
+            },
+            color
+        );
+    };
+
+    // 任务：每任务一条独立颜色的框（只画一次，避免每秒刷包）
+    std::unordered_set<uint64_t> aliveTasks;
+    aliveTasks.reserve(tasks.size());
     for (auto* task : tasks) {
-        alive.insert(task->id);
+        aliveTasks.insert(task->id);
         if (board.framedTasks.contains(task->id)) {
             continue;
         }
-        visual::RegionRenderer::drawBox(
-            player,
-            frameKeyOf(task->id),
-            AABB{
-                Vec3{(float)task->plan.minX, (float)task->plan.minY, (float)task->plan.minZ},
-                Vec3{(float)task->plan.maxX + 1.0f, (float)task->plan.maxY + 1.0f, (float)task->plan.maxZ + 1.0f}
-            },
-            frameColorForTask(task->id)
-        );
+        drawFrame(frameKeyOf(task->id), task->plan, frameColorForTask(task->id));
     }
 
-    // 已结束/消失的任务：清掉它的框
+    // 账单：固定红色，语义是"待支付"，与任务区域区分开
+    std::unordered_set<int64_t> aliveBills;
+    aliveBills.reserve(bills.size());
+    for (auto const* bill : bills) {
+        aliveBills.insert(bill->id);
+        if (board.framedBills.contains(bill->id)) {
+            continue;
+        }
+        drawFrame(billFrameKeyOf(bill->id), bill->plan, billFrameColor());
+    }
+
+    // 已结束/消失的条目：清掉它的框
     for (auto it = board.framedTasks.begin(); it != board.framedTasks.end();) {
-        if (!alive.contains(*it)) {
+        if (!aliveTasks.contains(*it)) {
             visual::RegionRenderer::clearBox(player, frameKeyOf(*it));
             it = board.framedTasks.erase(it);
         } else {
             ++it;
         }
     }
-    board.framedTasks = std::move(alive);
-}
+    for (auto it = board.framedBills.begin(); it != board.framedBills.end();) {
+        if (!aliveBills.contains(*it)) {
+            visual::RegionRenderer::clearBox(player, billFrameKeyOf(*it));
+            it = board.framedBills.erase(it);
+        } else {
+            ++it;
+        }
+    }
 
+    board.framedTasks = std::move(aliveTasks);
+    board.framedBills = std::move(aliveBills);
+}
 void TaskManager::refreshBoard(Player& player) {
     auto const& cfg = ConfigManager::getInstance().get();
 
@@ -920,7 +991,7 @@ void TaskManager::refreshBoard(Player& player) {
         std::vector<SweepTask*> const ordered = orderedTasksOfPlayer(player.getUuid());
 
         // 每个任务各画一条独立颜色的线框，与 BossBar 开关无关
-        refreshFrames(player, ordered);
+        refreshFrames(player, ordered, billsOfPlayer(player.getUuid()));
 
         auto hideSlot = [&](int i) {
             auto& slot = board.slots[(size_t)i];
@@ -1011,15 +1082,21 @@ void TaskManager::refreshBoard(Player& player) {
 
 void TaskManager::refreshBoards() {
     std::unordered_set<std::string> handled;
+    // 任务与账单都要驱动刷新：只有账单、没有任务的玩家也必须能刷新看板（否则账单线框永远不出现）
+    auto refresh = [&](mce::UUID const& uuid) {
+        if (!handled.insert(uuid.asString()).second) {
+            return;
+        }
+        if (auto* owner = findPlayerByUuid(uuid); owner) {
+            refreshBoard(*owner);
+        }
+    };
+
     for (auto& task : mTasks) {
-        auto* owner = findOwner(task);
-        if (owner == nullptr) {
-            continue;
-        }
-        if (!handled.insert(owner->getUuid().asString()).second) {
-            continue;
-        }
-        refreshBoard(*owner);
+        refresh(task.ownerUuid);
+    }
+    for (auto& bill : mBills) {
+        refresh(bill.ownerUuid);
     }
 }
 
@@ -2153,6 +2230,9 @@ void TaskManager::shutdown() {
         if (auto it = mBoards.find(owner->getUuid().asString()); it != mBoards.end()) {
             for (uint64_t id : it->second.framedTasks) {
                 visual::RegionRenderer::clearBox(*owner, frameKeyOf(id));
+            }
+            for (int64_t id : it->second.framedBills) {
+                visual::RegionRenderer::clearBox(*owner, billFrameKeyOf(id));
             }
         }
     }

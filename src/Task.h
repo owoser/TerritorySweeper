@@ -235,6 +235,8 @@ public:
     /// 该领地内的全部待支付账单（按 id 升序）
     [[nodiscard]] std::vector<PendingBill*> billsOfLand(int64_t landId);
     [[nodiscard]] std::vector<PendingBill const*> billsOfLand(int64_t landId) const;
+    /// 该玩家名下的全部待支付账单（线框展示用）
+    [[nodiscard]] std::vector<PendingBill const*> billsOfPlayer(mce::UUID const& uuid) const;
     [[nodiscard]] PendingBill* billById(int64_t billId);
 
     /// 该坐标是否落在某个任务（运行中或已暂停）的清理范围内（液体拦截用）
@@ -288,12 +290,17 @@ private:
     void            refreshBoard(Player& player);
     /// 渲染一个槽位（首次 show，之后一律增量 update，避免轮换闪烁）
     void            renderSlot(Player& player, int slotIndex, SweepTask& task, bool multi, bool rotating);
-    /// 为每个任务各画一条独立线框（不同颜色），任务结束自动清除
-    void            refreshFrames(Player& player, std::vector<SweepTask*> const& tasks);
+    /// 为每个任务/账单各画一条独立线框（任务按 id 配色，账单固定红色），消失时自动清除
+    void            refreshFrames(
+        Player&                                player,
+        std::vector<SweepTask*> const&         tasks,
+        std::vector<PendingBill const*> const& bills
+    );
     void            loadState();
     /// 按未完成比例退款，返回实际到账金额（0 表示无需退款或退款失败）
     int64_t         refundTask(SweepTask& task, std::string const& reason);
     [[nodiscard]] Player* findOwner(SweepTask const& task) const;
+    [[nodiscard]] Player* findPlayerByUuid(mce::UUID const& uuid) const;
 
     /// BossBar 单个槽位：固定 bossId 复用，内容轮换时只发增量更新
     struct BarSlot {
@@ -305,6 +312,7 @@ private:
     struct BarBoard {
         std::vector<BarSlot>         slots;        ///< 长度 = bossbar_max_bars
         std::unordered_set<uint64_t> framedTasks; ///< 已绘制线框的任务 id（每任务一条框）
+        std::unordered_set<int64_t>  framedBills; ///< 已绘制线框的账单 id（每账单一条框）
         int                          failures{0}; ///< 连续异常次数，>=3 停用该玩家看板
     };
 
