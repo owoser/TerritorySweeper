@@ -37,6 +37,10 @@ clang-cl 23 下该问题已消失，且上游 release 资产只含 `LeviLamina.d
 `bin/PreLoader.dll` 10,743,296 B、`lib/LeviLamina.lib` 546,626 B），编译链接 22.4s，总计 215.2s。
 安装目录哈希 `1063cfd5df854512934dee6527023253`，包定义来自 levimc-repo commit `fdab2d5`。
 
+**发版待办（README 冻结，按 §3.8 仅发版时集中更新）**：`README.md` 第 45-47 行仍描述
+「由 `xmake-repo-extra` 以预编译 SDK 分发」与 `tools/build-sdk-from-release.ps1`，下次发版需改为
+「由官方 levimc-repo 从上游源码构建」，并删除 SDK 相关说明与 `TS_LL_SDK_LOCAL` 环境变量段落。
+
 ---
 
 ## ⚙️ 新增/变更配置项汇总表（对比 v1.3.0）
