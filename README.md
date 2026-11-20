@@ -42,9 +42,13 @@
 
 ## 3. 构建与部署
 
-**工具链**：xmake 3.x + **clang-cl 23（LLVM 23）**；LeviLamina **26.60.8** 由 `xmake-repo-extra` 以预编译 SDK 分发（无需编译上游本体）。
-首次适配一个镜像里还没有的新 LL 版本时，可用 `pwsh tools/build-sdk-from-release.ps1 -Version <版本>` 从上游 release 反向合成 SDK，
-再用环境变量 `TS_LL_SDK_LOCAL` 指向 zip 所在目录完成安装。
+**工具链**：xmake 3.x + **clang-cl 23（LLVM 23）**（clang 19 编译 LeviLamina 源码会在 `MinecraftCommands.h` 报
+`invalid application of 'sizeof' to an incomplete type`，23 已修复，故为硬性下限）。
+
+LeviLamina **26.60.8** 由 xmake 通过官方 `levimc-repo` 从上游源码 tag 现场编译安装（上游 release 只提供
+`LeviLamina.dll`，不含 `include/` 与导入库，无法直接链接）。
+**首次配置需要十几分钟**（含 LeviLamina 本体及其依赖链），产物落在 `%LOCALAPPDATA%\.xmake\packages\l\levilamina\`，
+后续构建与 CI 缓存命中后均复用，不再重编。
 
 ```powershell
 # 首次配置（必须带 --toolchain=clang-cl；换过 PATH / 编译器后需要 -c 重新探测）

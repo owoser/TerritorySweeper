@@ -41,9 +41,9 @@ clang-cl 23 下该问题已消失，且上游 release 资产只含 `LeviLamina.d
 Build run `44728290959`（包缓存恢复后）4m35s —— Configure 5s + Build 42s。结论：源码构建只在包缓存失效时付出
 一次代价，日常迭代与旧预编译 SDK 方案（v1.3.0 的 Build job 5m29s）持平。
 
-**发版待办（README 冻结，按 §3.8 仅发版时集中更新）**：`README.md` 第 45-47 行仍描述
-「由 `xmake-repo-extra` 以预编译 SDK 分发」与 `tools/build-sdk-from-release.ps1`，下次发版需改为
-「由官方 levimc-repo 从上游源码构建」，并删除 SDK 相关说明与 `TS_LL_SDK_LOCAL` 环境变量段落。
+**配套清理**：`README.md` §3「工具链」段落已改为「由官方 `levimc-repo` 从上游源码 tag 现场编译安装」，
+并说明首次配置耗时、包缓存位置与缓存复用（此为按用户明确指令修改，例外于 §3.8 的 README 冻结规则）。
+GitHub 上两个自建 SDK pre-release（`sdk-v26.60.8`、`sdk-v26.51.9`）及其 tag 已删除，仓库不再分发预编译 SDK。
 
 ---
 
