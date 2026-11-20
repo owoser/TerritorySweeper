@@ -32,17 +32,19 @@
 
 | 依赖 | 版本 | 作用 | 是否必需 |
 | :--- | :--- | :--- | :--- |
-| **LeviLamina** | 26.51.x | 插件加载器 / 核心 SDK | 必需 |
-| **PLand** | 0.25.x | 领地查询、角色权限校验、领地 AABB | 必需 |
-| **iListenAttentively** | 0.17.x | 细粒度事件（流体流动事前拦截） | 必需 |
-| **DebugShape** | 0.11.x | 选区与任务区域线框渲染 | 可选（缺失仅不显示线框） |
-| **LegacyMoney** | 0.22.x | 默认经济后端 | `economy_type=LLMoney` 时必需 |
+| **LeviLamina** | 26.60.x | 插件加载器 / 核心 SDK | 必需 |
+| **PLand** | 0.26.x | 领地查询、角色权限校验、领地 AABB | 必需 |
+| **iListenAttentively** | 0.18.x | 细粒度事件（流体流动事前拦截） | 必需 |
+| **DebugShape** | 0.12.x | 选区与任务区域线框渲染 | 可选（缺失仅不显示线框） |
+| **LegacyMoney** | 0.22.x / 0.23.x | 默认经济后端 | `economy_type=LLMoney` 时必需 |
 
 ---
 
 ## 3. 构建与部署
 
-**工具链**：xmake 3.x + **clang-cl 23（LLVM 23）**；LeviLamina **26.51.9** 由 `xmake-repo-extra` 以预编译 SDK 分发（无需编译上游本体）。
+**工具链**：xmake 3.x + **clang-cl 23（LLVM 23）**；LeviLamina **26.60.8** 由 `xmake-repo-extra` 以预编译 SDK 分发（无需编译上游本体）。
+首次适配一个镜像里还没有的新 LL 版本时，可用 `pwsh tools/build-sdk-from-release.ps1 -Version <版本>` 从上游 release 反向合成 SDK，
+再用环境变量 `TS_LL_SDK_LOCAL` 指向 zip 所在目录完成安装。
 
 ```powershell
 # 首次配置（必须带 --toolchain=clang-cl；换过 PATH / 编译器后需要 -c 重新探测）
@@ -53,8 +55,9 @@ xmake -y
 ```
 
 - **构建产物**：`bin/TerritorySweeper/`（`TerritorySweeper.dll` + `manifest.json` + `TerritorySweeper.pdb`）；
-- **部署方式**：把 `bin/TerritorySweeper/` 里的 `TerritorySweeper.dll` 与 `manifest.json` 复制到服务端 `plugins/TerritorySweeper/`；
-- **版本注入**：设置环境变量 `TS_VERSION=v1.2.0` 时会把去前导 v 的版本写进 `manifest.json`，本地未设置时回退 `git describe`；
+- **部署方式**：把 `bin/TerritorySweeper/` 里的 `TerritorySweeper.dll` 与 `manifest.json` 复制到服务端 `mods/TerritorySweeper/`
+  （**LL 26.60 起 mod 根目录统一为 `mods/`**，26.51 及更早为 `plugins/`，两套目录不可混用；也可直接用 lip 按 `tooth.json` 安装）；
+- **版本注入**：设置环境变量 `TS_VERSION=v1.3.0` 时会把去前导 v 的版本写进 `manifest.json`，本地未设置时回退 `git describe`；
 - **CI**：`.github/workflows/build.yml`（push `main` / PR 编译校验）、`.github/workflows/release.yml`（推送 `v*` tag 自动构建 + 发版，发行说明读取 `release-notes/<tag>.md`）。
 
 ---
@@ -112,7 +115,7 @@ xmake -y
 
 ## 6. 配置文件详解 (`config.jsonc`)
 
-配置文件位于 `plugins/TerritorySweeper/config/config.jsonc`，支持标准 `//` 注释。
+配置文件位于 `mods/TerritorySweeper/config/config.jsonc`（LL 26.60 起；26.51 及更早为 `plugins/TerritorySweeper/config/config.jsonc`），支持标准 `//` 注释。
 版本升级（当前 **`config_version: 5`**）时自动备份为 `.bak-时间戳` 并重写纯净模板，**用户既有配置值完整保留**。
 
 ```jsonc
@@ -276,7 +279,7 @@ xmake -y
 
 ## 8. 数据存储与升级
 
-数据位于 `plugins/TerritorySweeper/data/territorysweeper.db`（SQLite，WAL 模式）：
+数据位于 `mods/TerritorySweeper/data/territorysweeper.db`（LL 26.60 起；更早版本为 `plugins/TerritorySweeper/data/`），SQLite，WAL 模式：
 
 | Schema | 内容 |
 | :--- | :--- |

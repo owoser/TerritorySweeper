@@ -6,7 +6,7 @@ end
 
 -- 本地补丁仓库：把 levilamina 的 on_install 换成「预编译 SDK」下载，免去本机与 CI 每次编译上游本体。
 -- 必须放在 levimc-repo 之前：同名包以先注册者为准。
--- 上游 LeviLamina 26.51.9 在 clang-cl 23 下可从源码构建（clang 19 会触发 MinecraftCommands.h
+-- 上游 LeviLamina 26.60.8 亦可源码构建（clang 19 会触发 MinecraftCommands.h
 -- 的 incomplete type 错误），因此预编译 SDK 只是构建加速手段，不是绕开上游编译失败的补丁。
 -- 细节见 xmake-repo-extra/packages/l/levilamina/xmake.lua。
 add_repositories("ts-extra xmake-repo-extra")
@@ -19,17 +19,17 @@ if tsVersion then
     tsVersion = tsVersion:gsub("^[vV]", "")
 end
 
--- 说明：LeviLamina SDK 版本线需与服务器实际部署的 LL3 保持同一 26.51.x 小版本线。
--- 这里锁定 26.51.9（官方改用 LLVM 23 工具链后的版本，本机与 CI 均已验证），不使用浮动版本，
+-- 说明：LeviLamina SDK 版本线需与服务器实际部署的 LL3 保持同一 26.60.x 小版本线。
+-- 这里锁定 26.60.8（26.60 系列最新稳定版），不使用浮动版本，
 -- 避免上游小版本升级悄悄改变 ABI / 依赖版本。
 if is_config("target_type", "server") then
-    add_requires("levilamina 26.51.9", {configs = {target_type = "server"}})
+    add_requires("levilamina 26.60.8", {configs = {target_type = "server"}})
 else
-    add_requires("levilamina 26.51.9", {configs = {target_type = "client"}})
+    add_requires("levilamina 26.60.8", {configs = {target_type = "client"}})
 end
 
 -- 强制所有传递依赖使用同一份 levilamina，避免 ABI 混用
-add_requireconfs("**.levilamina", {override = true, version = "26.51.9", configs = {target_type = "server"}})
+add_requireconfs("**.levilamina", {override = true, version = "26.60.8", configs = {target_type = "server"}})
 
 add_requires("levibuildscript")
 
@@ -37,7 +37,7 @@ add_requires("levibuildscript")
 add_requires("sqlite3")
 
 -- 说明：
---   PLand / DebugShape / LegacyMoney 都是运行期插件（plugins/*.dll），本插件不在链接期
+--   PLand / DebugShape / LegacyMoney 都是运行期插件（26.60 起统一位于 mods/*.dll），本插件不在链接期
 --   静态引用它们的导入库，而是启动时通过 ModManagerRegistry + GetProcAddress 动态解析
 --   所需导出符号并打印自检报告。这样依赖插件版本迭代时，即使符号缺失也只会降级某项
 --   功能，而不会导致本插件 DLL 加载失败（导入表缺失会让整个插件无法加载）。
@@ -90,7 +90,6 @@ target("TerritorySweeper")
             "-Wno-ignored-qualifiers",
             "-Wno-missing-field-initializers",
             "-Wno-microsoft-unqualified-friend",
-            "-Wno-deprecated-declarations",
             {tools = {"clang_cl"}}
         )
     end
@@ -127,7 +126,7 @@ target("TerritorySweeper")
         -- ------------------------------------------------------------------
         -- 1) 编译器版本护栏
         -- ------------------------------------------------------------------
-        -- LeviLamina 26.51.x 的 MinecraftCommands.h 在 clang 19 上会触发
+        -- LeviLamina 26.60.x 的 MinecraftCommands.h 在 clang 19 上会触发
         --   error: invalid application of 'sizeof' to an incomplete type
         -- 必须用 clang-cl >= 23。VS 2022 自带的 Clang 组件只有 19.1.5，如果 PATH 里先命中了它
         -- （例如在 VS 开发者命令提示符里构建），这里直接给出可读报错，而不是等编译上游头文件才炸。
@@ -143,7 +142,7 @@ target("TerritorySweeper")
             if clangCl then
                 local major = os.iorunv(clangCl, {"--version"}):match("clang version (%d+)")
                 if major and tonumber(major) < 23 then
-                    raise("LeviLamina 26.51.9 需要 clang-cl >= 23，当前 PATH 里先找到的 clang-cl 是 %s.x（%s）。\n"
+                    raise("LeviLamina 26.60.8 需要 clang-cl >= 23，当前 PATH 里先找到的 clang-cl 是 %s.x（%s）。\n"
                         .. "请安装 LLVM 23（https://github.com/llvm/llvm-project/releases/tag/llvmorg-23.1.4），\n"
                         .. "并把它的 bin 目录放到 PATH 最前面；VS 2022 自带的 19.1.5 不够。\n"
                         .. "改完 PATH 后必须执行 xmake f -c -y 让 xmake 重新探测工具链。", major, clangCl)

@@ -9,7 +9,7 @@
 #
 # 用法：pwsh -File tools/gen-ila-lib.ps1 [-Dll <路径>] [-OutDir <目录>]
 param(
-    [string]$Dll = 'D:\MCserver\Master-26.51\plugins\iListenAttentively\iListenAttentively.dll',
+    [string]$Dll = 'D:\MCserver\SER-DEV\mods\iListenAttentively\iListenAttentively.dll',
     [string]$OutDir = 'third_party/lib'
 )
 

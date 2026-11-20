@@ -21,22 +21,40 @@
 --   如果哪天不再需要预编译 SDK 加速，删掉本目录并移除 xmake.lua 里的
 --   add_repositories("ts-extra xmake-repo-extra") 即可回到官方源码构建。
 --
+-- 自 26.60.x 起，官方 release 资产只含 LeviLamina.dll / .pdb / manifest.json，**不再附带头文件与导入库**，
+-- 因此本 SDK 由 tools/build-sdk-from-release.ps1 合成：
+--   include/  ← 对应 tag 的源码树（src/mc + src-server/mc + src/ll/api）
+--   lib/      ← 官方 release DLL 的导出表（llvm-readobj --coff-exports → .def → llvm-lib）
+-- 该脚本产出的 zip 与 tools/build-sdk.ps1 的产物同名同结构，包定义无需区分来源。
+--
 -- 分发包由 GitHub Release 托管（两个镜像，同一 sha256）：
---   主   https://github.com/owoser/TerritorySweeper/releases/tag/sdk-v26.51.9
---   兜底 https://github.com/owoser/TerritoryMobBlocker/releases/tag/sdk-v26.51.9（同项目组共享）
+--   主   https://github.com/owoser/TerritorySweeper/releases/tag/sdk-v26.60.8
+--   兜底 https://github.com/owoser/TerritoryMobBlocker/releases/tag/sdk-v26.60.8（同项目组共享）
 --
 -- 升级 LL 小版本时：
---   1. pwsh tools/build-sdk.ps1 -Version <新版本>           # 本机已装好该版本 SDK 后执行
+--   1. pwsh tools/build-sdk-from-release.ps1 -Version <新版本>    # 合成 SDK（无需先装源码包）
+--      或  pwsh tools/build-sdk.ps1 -Version <新版本>             # 本机已源码构建安装过时直接打包
 --   2. gh release create sdk-v<新版本> bin/levilamina-sdk-<新版本>-server.zip \
 --        -R owoser/TerritorySweeper --prerelease --title "LeviLamina <新版本> SDK (prebuilt)"
---   3. 下方 add_versions 的版本号与 sha256、以及 xmake.lua 里的 26.51.9 一起更新
+--   3. 下方 add_versions 的版本号与 sha256、以及 xmake.lua 里的版本号一起更新
 -- 详见 AGENT.md「GitHub Actions 自动构建与发版」章节。
+--
+-- 本地兜底：设置环境变量 TS_LL_SDK_LOCAL=<zip 所在目录> 后，构建会优先直接读该目录下的
+-- levilamina-sdk-<版本>-server.zip（省掉上传 release 的一次往返）。CI 不设置该变量，行为不变。
 -- ────────────────────────────────────────────────────────────────────────
+
+local TS_LL_VERSION = "26.60.8"
+local TS_LL_SHA256 = "843f2918e100ff70bfc9297c6a6f6468a6b44b4e61c397061f80b9c6775a8d5b"
 
 package("levilamina")
     set_homepage("https://github.com/LiteLDev/LeviLamina")
     set_description("LeviLamina SDK (prebuilt, faster than building upstream from source)")
 
+    local localdir = os.getenv("TS_LL_SDK_LOCAL")
+    if localdir then
+        add_urls(localdir .. "/levilamina-sdk-$(version)-server.zip", {alias = "local"})
+        add_versions("local:" .. TS_LL_VERSION, TS_LL_SHA256)
+    end
     add_urls(
         "https://github.com/owoser/TerritorySweeper/releases/download/sdk-v$(version)/levilamina-sdk-$(version)-server.zip",
         {alias = "ts"}
@@ -45,15 +63,15 @@ package("levilamina")
         "https://github.com/owoser/TerritoryMobBlocker/releases/download/sdk-v$(version)/levilamina-sdk-$(version)-server.zip",
         {alias = "shared"}
     )
-    add_versions("ts:26.51.9", "33056860fc66676f41d9b11bcef082998a41967ce1ca8a1ea1c9da77861f086c")
-    add_versions("shared:26.51.9", "33056860fc66676f41d9b11bcef082998a41967ce1ca8a1ea1c9da77861f086c")
+    add_versions("ts:" .. TS_LL_VERSION, TS_LL_SHA256)
+    add_versions("shared:" .. TS_LL_VERSION, TS_LL_SHA256)
 
     add_defines("ENTT_PACKED_PAGE=128", "ENTT_SPARSE_PAGE=4096", "ENTT_NO_MIXIN")
 
     add_configs("target_type", {default = "server", values = {"server", "client"}})
 
     on_load(function (package)
-        -- 与 levimc-repo 官方 26.51.9 版本定义保持一致：
+        -- 与 levimc-repo 官方 26.60.8 版本定义（versions/26_60_8.lua）保持一致：
         -- 这些传递依赖仍由 xmake 正常安装，本包只提供 levilamina 自身的 include/lib。
         local deps_common = {
             "entt v4.0.0",
@@ -69,7 +87,7 @@ package("levilamina")
             "pcg_cpp v1.0.0",
             "pfr 2.1.1",
             "symbolprovider v1.3.0",
-            "parallel-hashmap v1.3.12",
+            "parallel-hashmap v2.0.0",
             "concurrentqueue v1.0.4",
             "stb 2025.03.14"
         }
@@ -79,10 +97,10 @@ package("levilamina")
 
         -- bedrockdata 提供 prelink 阶段需要的 bedrock_runtime_data
         if package:config("target_type") == "server" then
-            package:add("deps", "bedrockdata v26.51.1-server.12")
+            package:add("deps", "bedrockdata v26.60.6-server.16")
             package:add("defines", "LL_PLAT_S")
         else
-            package:add("deps", "bedrockdata v26.51.1-client.12")
+            package:add("deps", "bedrockdata v26.60.5-client.16")
             package:add("defines", "LL_PLAT_C")
         end
     end)

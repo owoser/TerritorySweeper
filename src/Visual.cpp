@@ -110,7 +110,10 @@ void sendBossEvent(
     pkt->mEventType = type;
 
     if (title) {
-        pkt->mName = Bedrock::Safety::RedactableString{*title};
+        // 26.60 起 Bedrock::Safety::RedactableString 的「拷贝赋值」被标记为 MCNAPI（不再承诺导出），
+        // 这里改走 LeviLamina 仍以 MCAPI 导出的 operator=(std::string&&) 重载，
+        // 避免依赖 bedrock_runtime.dll 里的内部符号（缺失时会导致插件整体加载失败）。
+        pkt->mName = std::string{*title};
     }
     if (percent01) {
         pkt->mHealthPercent = clamp01(*percent01);

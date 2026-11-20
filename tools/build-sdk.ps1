@@ -5,7 +5,7 @@
 .DESCRIPTION
   本项目的 CI 与本地构建都通过 xmake-repo-extra/packages/l/levilamina/xmake.lua 下载预编译
   SDK（只为省掉每次编译上游本体；clang-cl 23 下源码构建本身可用）。
-  上游发布新的 26.51.x 补丁版本时，用本脚本重新打包并更新包定义中的版本号与 sha256。
+  上游发布新的 26.60.x 补丁版本时，用本脚本重新打包并更新包定义中的版本号与 sha256。
 
   完整升级流程见 AGENT.md「GitHub Actions 自动构建与发版」章节：
     1. 本机先成功安装目标版本 SDK（xmake f -p windows -a x64 -m release --toolchain=clang-cl -y）
@@ -14,15 +14,15 @@
     4. 把新 sha256 与版本号写回 xmake-repo-extra/packages/l/levilamina/xmake.lua 和 xmake.lua
 
 .EXAMPLE
-  # 打包本机已安装的 26.51.9
-  pwsh tools/build-sdk.ps1 -Version 26.51.9
+  # 打包本机已安装的 26.60.8
+  pwsh tools/build-sdk.ps1 -Version 26.60.8
 
   # 输出到指定目录
-  pwsh tools/build-sdk.ps1 -Version 26.51.9 -OutputDir D:\tmp
+  pwsh tools/build-sdk.ps1 -Version 26.60.8 -OutputDir D:\tmp
 #>
 [CmdletBinding()]
 param(
-    [string] $Version = "26.51.9",
+    [string] $Version = "26.60.8",
     [string] $TargetType = "server",
     [string] $OutputDir = "$PSScriptRoot\..\bin"
 )
