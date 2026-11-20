@@ -16,8 +16,8 @@ jobs:
   build:
     name: Build (windows-x64)
     # windows-2022 = VS 2022 / MSVC 14.44，与本地验证通过的工具链一致。
-    # LeviLamina SDK 由 xmake-repo-extra 以预编译产物分发（省掉每次编译上游本体），
-    # 见 xmake-repo-extra/packages/l/levilamina/xmake.lua。
+    # LeviLamina 由 xmake 从官方 levimc-repo 源码 tag 构建安装（首次十几分钟）；
+    # 产物落在 ~/AppData/Local/.xmake 的包缓存里，由下面的 actions/cache 复用，后续构建不再重编。
     runs-on: windows-2022
 
     steps:
@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/AppData/Local/.xmake
-          key: xmake-v3-${{ runner.os }}-${{ hashFiles('xmake.lua', 'xmake-repo-extra/**/xmake.lua') }}
+          key: xmake-v3-${{ runner.os }}-${{ hashFiles('xmake.lua') }}
           restore-keys: |
             xmake-v3-${{ runner.os }}-
 

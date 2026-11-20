@@ -16,7 +16,26 @@
 
 ## 📝 提交历史明细（v1.3.0 之后）
 
-_（暂无）_
+### 2026-11-20 · 构建依赖：移除自建预编译 SDK，回归官方源码构建
+
+**背景**：`xmake-repo-extra` 的预编译 SDK 原本是为绕开 clang 19 下 LeviLamina 源码构建失败
+（`src/mc/server/commands/MinecraftCommands.h` 报 `invalid application of 'sizeof' to an incomplete type`）。
+clang-cl 23 下该问题已消失，且上游 release 资产只含 `LeviLamina.dll/.pdb/manifest.json`（从不提供 include/lib），
+自建 SDK 需要双镜像 pre-release + sha256 维护，属于额外负担，故整体移除。
+
+**改动**
+- `xmake.lua`：删除 `add_repositories("ts-extra xmake-repo-extra")`，仅保留官方
+  `add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")`；注释改为说明
+  LeviLamina 26.60.x 由 xmake 从上游源码 tag 构建安装。
+- 删除 `xmake-repo-extra/packages/l/levilamina/xmake.lua`、`tools/build-sdk.ps1`、`tools/build-sdk-from-release.ps1`。
+- `.github/workflows/release.yml`：actions/cache key 由 `hashFiles('xmake.lua', 'xmake-repo-extra/**/xmake.lua')`
+  简化为 `hashFiles('xmake.lua')`，job 注释说明首次构建需从源码编译 LeviLamina（耗时十几分钟），产物落在
+  `~/AppData/Local/.xmake` 包缓存并随缓存复用。
+
+**验证**：`xmake f -c -y --toolchain=clang-cl` + `xmake -y` → `[100%]: build ok`。
+配置阶段 191.7s（含 clone 与从源码构建 LeviLamina 26.60.8：`bin/LeviLamina.dll` 5,005,312 B、
+`bin/PreLoader.dll` 10,743,296 B、`lib/LeviLamina.lib` 546,626 B），编译链接 22.4s，总计 215.2s。
+安装目录哈希 `1063cfd5df854512934dee6527023253`，包定义来自 levimc-repo commit `fdab2d5`。
 
 ---
 

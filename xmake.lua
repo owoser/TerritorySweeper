@@ -4,12 +4,10 @@ if is_plat("windows") then
     set_toolchains("clang-cl")
 end
 
--- 本地补丁仓库：把 levilamina 的 on_install 换成「预编译 SDK」下载，免去本机与 CI 每次编译上游本体。
--- 必须放在 levimc-repo 之前：同名包以先注册者为准。
--- 上游 LeviLamina 26.60.8 亦可源码构建（clang 19 会触发 MinecraftCommands.h
--- 的 incomplete type 错误），因此预编译 SDK 只是构建加速手段，不是绕开上游编译失败的补丁。
--- 细节见 xmake-repo-extra/packages/l/levilamina/xmake.lua。
-add_repositories("ts-extra xmake-repo-extra")
+-- 依赖仓库：LeviLamina 直接使用官方 levimc-repo，由 xmake 从上游源码 tag 构建安装。
+-- （26.60.x 在 clang-cl 23 下可正常编译；clang 19 时代会在 src/mc/server/commands/
+-- MinecraftCommands.h 触发 "invalid application of 'sizeof' to an incomplete type"，
+-- 升级到 clang 23 后该路径已修复，因此不再需要自建预编译 SDK 分发。）
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
 
 -- 版本号：CI 通过环境变量 TS_VERSION 注入（取自 tag，如 v1.2.0，去掉前导 v）。
@@ -19,7 +17,7 @@ if tsVersion then
     tsVersion = tsVersion:gsub("^[vV]", "")
 end
 
--- 说明：LeviLamina SDK 版本线需与服务器实际部署的 LL3 保持同一 26.60.x 小版本线。
+-- 说明：LeviLamina 版本线需与服务器实际部署的 LL3 保持同一 26.60.x 小版本线。
 -- 这里锁定 26.60.8（26.60 系列最新稳定版），不使用浮动版本，
 -- 避免上游小版本升级悄悄改变 ABI / 依赖版本。
 if is_config("target_type", "server") then
@@ -153,7 +151,7 @@ target("TerritorySweeper")
         -- ------------------------------------------------------------------
         -- 2) iListenAttentively 导入库（构建期由入库的 .def 生成，不入库）
         -- ------------------------------------------------------------------
-        -- 上游 xmake 源码包会连带编译整个 ILA 并锁死某个补丁版 LeviLamina，与本项目的 SDK 线冲突，
+        -- 上游 xmake 源码包会连带编译整个 ILA 并锁死某个补丁版 LeviLamina，与本项目的 LL 版本线冲突，
         -- 因此改为「头文件入库 + 导入库构建期生成 + /DELAYLOAD 延迟加载」：
         --   * third_party/lib/ILA.def  纯文本导出表，**入库跟踪**（由 tools/gen-ila-lib.ps1 从测试服
         --     已部署的 iListenAttentively.dll 反向导出；ILA 升级时重新导出并提交）；
